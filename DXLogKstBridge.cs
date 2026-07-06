@@ -63,6 +63,8 @@ namespace DXLog.net
         private Button[] _macroButtons;
         private Button _editMacrosButton;
         private System.Windows.Forms.Timer _userRefreshTimer;
+        private System.Windows.Forms.Timer _qsoLoggedRefreshTimer;
+        private bool _subscribedNewQsoSaved;
         private System.Windows.Forms.Timer _inputFocusTimer;
         private Control _inputFocusTarget;
         private DateTime _inputFocusUntilUtc;
@@ -200,6 +202,7 @@ namespace DXLog.net
                     _contestData = _mainForm.ContestDataProvider;
                     if (_contestData != null)
                         _contestData.FocusedRadioChanged += new ContestData.FocusedRadioChange(HandleDxLogFocusChanged);
+                    SubscribeDxLogQsoSavedEvent();
                 }
             }
 
@@ -213,10 +216,16 @@ namespace DXLog.net
             {
                 if (_contestData != null)
                     _contestData.FocusedRadioChanged -= HandleDxLogFocusChanged;
+                UnsubscribeDxLogQsoSavedEvent();
                 if (_userRefreshTimer != null)
                 {
                     _userRefreshTimer.Stop();
                     _userRefreshTimer.Dispose();
+                }
+                if (_qsoLoggedRefreshTimer != null)
+                {
+                    _qsoLoggedRefreshTimer.Stop();
+                    _qsoLoggedRefreshTimer.Dispose();
                 }
                 if (_inputFocusTimer != null)
                 {
@@ -418,7 +427,7 @@ namespace DXLog.net
             _split.Panel2.Controls.Add(_messageSplit);
             _layout.Controls.Add(_split, 0, 1); _layout.SetColumnSpan(_split, 12);
 
-            _sendButton = new Button { Text = "Send", Dock = DockStyle.Fill, Enabled = false };
+            _sendButton = new Button { Text = "CQ", Dock = DockStyle.Fill, Enabled = false };
             _cqButton = new Button { Text = "To call", Dock = DockStyle.Fill, Enabled = false };
             _layout.Controls.Add(_sendButton, 0, 2);
             _layout.Controls.Add(_cqButton, 1, 2);
@@ -460,8 +469,8 @@ namespace DXLog.net
             _mapButton.Click += delegate { ShowMapWindow(); };
             _connectButton.Click += async delegate { await ConnectClicked(); };
             _disconnectButton.Click += delegate { DisconnectClicked(); };
-            _sendButton.Click += async delegate { await SendClicked(true); };
-            _cqButton.Click += async delegate { await CqClicked(); };
+            _sendButton.Click += async delegate { await CqClicked(); };
+            _cqButton.Click += async delegate { await ToCallClicked(); };
 
             _persistSaveTimer = new System.Windows.Forms.Timer();
             _persistSaveTimer.Interval = 500;
@@ -505,8 +514,20 @@ namespace DXLog.net
             };
 
             _userRefreshTimer = new System.Windows.Forms.Timer();
-            _userRefreshTimer.Interval = 30000;
+            _userRefreshTimer.Interval = 10000;
             _userRefreshTimer.Tick += async delegate { await RefreshUsers(); };
+
+            // When a QSO is logged in DXLog, refresh immediately rather than
+            // waiting for the normal 10 second ON4KST /SH US poll.  The small
+            // timer debounce avoids sending multiple refresh commands if DXLog
+            // fires more than once while the log line is being finalized.
+            _qsoLoggedRefreshTimer = new System.Windows.Forms.Timer();
+            _qsoLoggedRefreshTimer.Interval = 1000;
+            _qsoLoggedRefreshTimer.Tick += async delegate
+            {
+                _qsoLoggedRefreshTimer.Stop();
+                await ForceRefreshAfterQsoLoggedAsync();
+            };
 
             AdjustUserColumns();
             AdjustMessageColumns();
@@ -1568,6 +1589,35 @@ namespace DXLog.net
         private async Task CqClicked()
         {
             if (_kst == null || !_kst.IsConnected) return;
+
+            // CQ is now the explicit general-message action.  Clear any highlighted
+            // station/message first so the user can always send to CQ even after
+            // selecting a station in the list.
+            ClearSelectedStation();
+
+            if (_composeDialogOpen) return;
+            string line;
+            try
+            {
+                _composeDialogOpen = true;
+                line = MessagePrompt.Show(this, "Send CQ / general KST message", "CQ message", "");
+            }
+            finally
+            {
+                _composeDialogOpen = false;
+            }
+
+            if (line == null) return;
+            line = line.Trim();
+            if (line.Length == 0) return;
+            await _kst.SendCommandAsync(line);
+            UpdateStatus("Sent CQ/general KST message");
+            ResetSendBoxPlaceholder();
+        }
+
+        private async Task ToCallClicked()
+        {
+            if (_kst == null || !_kst.IsConnected) return;
             string call = GetHighlightedCall();
             if (String.IsNullOrWhiteSpace(call))
             {
@@ -1575,22 +1625,28 @@ namespace DXLog.net
                 return;
             }
 
-            if (_composeDialogOpen) return;
-            string body = BuildDefaultSkedMessage();
-            try
-            {
-                _composeDialogOpen = true;
-                body = MessagePrompt.Show(this, "Message selected station", "Message to " + call, body);
-            }
-            finally
-            {
-                _composeDialogOpen = false;
-            }
-            if (body == null) return;
-            body = body.Trim();
-            if (body.Length == 0) body = BuildDefaultSkedMessage();
-            await SendDirectedMessageAsync(call, body);
-            ResetSendBoxPlaceholder();
+            // Blank directed compose field.  Macros remain the pre-filled quick-send options.
+            await SendMessageToCall(call, "");
+        }
+
+        private void ClearSelectedStation()
+        {
+            ClearListSelection(_users);
+            ClearListSelection(_messages);
+            ClearListSelection(_threadMessages);
+            _lastSelectedCall = "";
+            RestyleUsers();
+            RestyleMessages();
+            RestyleThreadMessages();
+            RefreshConversationView();
+        }
+
+        private static void ClearListSelection(ListView list)
+        {
+            if (list == null) return;
+            List<ListViewItem> selected = new List<ListViewItem>();
+            foreach (ListViewItem item in list.SelectedItems) selected.Add(item);
+            foreach (ListViewItem item in selected) item.Selected = false;
         }
 
         private void ResetSendBoxPlaceholder()
@@ -2351,6 +2407,106 @@ namespace DXLog.net
             catch { return false; }
         }
 
+        private void SubscribeDxLogQsoSavedEvent()
+        {
+            try
+            {
+                if (_mainForm == null || _subscribedNewQsoSaved) return;
+                _mainForm.NewQSOSaved += HandleDxLogNewQsoSaved;
+                _subscribedNewQsoSaved = true;
+            }
+            catch { }
+        }
+
+        private void UnsubscribeDxLogQsoSavedEvent()
+        {
+            try
+            {
+                if (_mainForm == null || !_subscribedNewQsoSaved) return;
+                _mainForm.NewQSOSaved -= HandleDxLogNewQsoSaved;
+                _subscribedNewQsoSaved = false;
+            }
+            catch { }
+        }
+
+        private void HandleDxLogNewQsoSaved(DXQSO newQso)
+        {
+            SafeUi(delegate
+            {
+                try
+                {
+                    // Re-check all visible calls against the DXLog log immediately,
+                    // then request a fresh ON4KST user list so the user/map panes
+                    // reflect the latest worked status without waiting 10 seconds.
+                    RestyleUsers();
+                    RecheckMessageWorkedState();
+                    RefreshConversationView();
+                    RefreshMapWindow();
+
+                    if (_qsoLoggedRefreshTimer != null)
+                    {
+                        _qsoLoggedRefreshTimer.Stop();
+                        _qsoLoggedRefreshTimer.Start();
+                    }
+                    else
+                    {
+                        _ = ForceRefreshAfterQsoLoggedAsync();
+                    }
+                }
+                catch { }
+            });
+        }
+
+        private async Task ForceRefreshAfterQsoLoggedAsync()
+        {
+            try
+            {
+                RecheckMessageWorkedState();
+                RestyleUsers();
+                RestyleMessages();
+                RestyleThreadMessages();
+                RefreshConversationView();
+                RefreshMapWindow();
+
+                if (_kst != null && _kst.IsConnected)
+                {
+                    UpdateStatus("QSO logged - refreshing KST user list");
+                    await RefreshUsers();
+                }
+                else
+                {
+                    UpdateStatus("QSO logged - KST not connected");
+                }
+            }
+            catch { }
+        }
+
+        private void RecheckMessageWorkedState()
+        {
+            try
+            {
+                if (_messages != null)
+                {
+                    foreach (ListViewItem item in _messages.Items)
+                    {
+                        KstParsedLine msg = item.Tag as KstParsedLine;
+                        if (msg == null || String.IsNullOrWhiteSpace(msg.Call)) continue;
+                        msg.Worked = IsWorkedBefore(msg.Call);
+                    }
+                }
+                if (_threadMessages != null)
+                {
+                    foreach (ListViewItem item in _threadMessages.Items)
+                    {
+                        KstParsedLine msg = item.Tag as KstParsedLine;
+                        if (msg == null || String.IsNullOrWhiteSpace(msg.Call)) continue;
+                        msg.Worked = IsWorkedBefore(msg.Call);
+                    }
+                }
+            }
+            catch { }
+        }
+
         private void HandleDxLogFocusChanged()
         {
             SafeUi(delegate
@@ -2639,6 +2795,7 @@ namespace DXLog.net
             private readonly Button _zoomResetButton;
             private readonly Label _status;
             private readonly System.Windows.Forms.Timer _refreshTimer;
+            private readonly Icon _mapIcon;
 
             public KstUserMapForm(KstChatBridge owner)
             {
@@ -2648,6 +2805,8 @@ namespace DXLog.net
                 Size = new Size(900, 620);
                 MinimumSize = new Size(500, 360);
                 Font = owner._windowFont;
+                _mapIcon = CreateGlobeIcon();
+                if (_mapIcon != null) Icon = _mapIcon;
 
                 TableLayoutPanel layout = new TableLayoutPanel();
                 layout.Dock = DockStyle.Fill;
@@ -2704,8 +2863,79 @@ namespace DXLog.net
             protected override void OnFormClosed(FormClosedEventArgs e)
             {
                 if (_refreshTimer != null) _refreshTimer.Stop();
+                if (_mapIcon != null) _mapIcon.Dispose();
                 base.OnFormClosed(e);
             }
+
+            private static Icon CreateGlobeIcon()
+            {
+                try
+                {
+                    Bitmap bmp = new Bitmap(32, 32);
+                    using (Graphics g = Graphics.FromImage(bmp))
+                    {
+                        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                        g.Clear(Color.Transparent);
+
+                        Rectangle globe = new Rectangle(3, 3, 26, 26);
+                        using (SolidBrush sea = new SolidBrush(Color.FromArgb(44, 126, 196)))
+                        using (Pen outline = new Pen(Color.FromArgb(18, 52, 92), 2))
+                        using (Pen grid = new Pen(Color.FromArgb(170, 230, 245, 255), 1))
+                        using (SolidBrush land = new SolidBrush(Color.FromArgb(78, 168, 92)))
+                        using (SolidBrush land2 = new SolidBrush(Color.FromArgb(62, 145, 78)))
+                        {
+                            g.FillEllipse(sea, globe);
+                            g.DrawEllipse(outline, globe);
+
+                            g.DrawArc(grid, 8, 4, 16, 24, 90, 180);
+                            g.DrawArc(grid, 8, 4, 16, 24, 270, 180);
+                            g.DrawLine(grid, 16, 4, 16, 29);
+                            g.DrawLine(grid, 5, 16, 28, 16);
+                            g.DrawArc(grid, 5, 10, 22, 12, 0, 360);
+
+                            Point[] europe = new Point[]
+                            {
+                                new Point(14, 8), new Point(20, 7), new Point(24, 11),
+                                new Point(22, 15), new Point(18, 16), new Point(16, 14),
+                                new Point(12, 13), new Point(11, 10)
+                            };
+                            Point[] africa = new Point[]
+                            {
+                                new Point(17, 15), new Point(23, 17), new Point(24, 22),
+                                new Point(20, 27), new Point(16, 24), new Point(14, 18)
+                            };
+                            Point[] america = new Point[]
+                            {
+                                new Point(7, 9), new Point(12, 7), new Point(13, 12),
+                                new Point(10, 17), new Point(12, 24), new Point(9, 27),
+                                new Point(6, 20), new Point(5, 14)
+                            };
+
+                            g.FillPolygon(land, europe);
+                            g.FillPolygon(land2, africa);
+                            g.FillPolygon(land, america);
+                        }
+
+                        using (Pen shine = new Pen(Color.FromArgb(180, Color.White), 2))
+                        {
+                            g.DrawArc(shine, 7, 6, 14, 10, 195, 70);
+                        }
+                    }
+
+                    IntPtr hIcon = bmp.GetHicon();
+                    Icon icon = (Icon)Icon.FromHandle(hIcon).Clone();
+                    DestroyIcon(hIcon);
+                    bmp.Dispose();
+                    return icon;
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+            private static extern bool DestroyIcon(IntPtr handle);
 
             public void RefreshStations()
             {
