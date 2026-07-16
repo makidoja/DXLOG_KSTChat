@@ -4851,7 +4851,7 @@ namespace DXLog.net
                 result.Type = KstParsedType.User;
                 result.Call = CleanCall(user.Groups[1].Value);
                 result.Locator = user.Groups[2].Value.ToUpperInvariant();
-                result.Name = user.Groups[3].Value.Trim();
+                result.Name = DecodeDisplayText(user.Groups[3].Value);
                 return result;
             }
 
@@ -4874,7 +4874,7 @@ namespace DXLog.net
                     result.Type = KstParsedType.Chat;
                     result.TimeText = chat.Groups[1].Value.Substring(0, 2) + ":" + chat.Groups[1].Value.Substring(2, 2);
                     result.Call = call;
-                    result.Name = chat.Groups[3].Value.Trim();
+                    result.Name = DecodeDisplayText(chat.Groups[3].Value);
                     result.Message = text;
                     return result;
                 }
@@ -4899,6 +4899,25 @@ namespace DXLog.net
             return s.IndexOf("MHz", StringComparison.OrdinalIgnoreCase) >= 0 ||
                    s.IndexOf("Your choice", StringComparison.OrdinalIgnoreCase) >= 0 ||
                    s.IndexOf("Welcome", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static string DecodeDisplayText(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value)) return "";
+
+            // ON4KST sometimes sends names containing HTML entities rather than
+            // literal characters, for example &#9889;, &#8482; or &amp;. Decode
+            // twice at most so an accidentally double-encoded value is also
+            // displayed correctly, without repeatedly transforming normal text.
+            string decoded = value.Trim();
+            for (int i = 0; i < 2; i++)
+            {
+                string next = WebUtility.HtmlDecode(decoded);
+                if (String.Equals(next, decoded, StringComparison.Ordinal)) break;
+                decoded = next;
+            }
+
+            return decoded.Replace('\u00A0', ' ').Trim();
         }
 
         private static string CleanCall(string call)
