@@ -83,6 +83,10 @@ If Visual Studio cannot find the DXLog assemblies, remove and re-add the two ref
 
 ---
 
+The compiled DLL is also available to download directly from github
+
+---
+
 # 2. Install the bridge in DXLog
 
 1. Close DXLog.net completely.
