@@ -1,4 +1,4 @@
-// DXLogKstBridge.cs
+﻿// DXLogKstBridge.cs
 // DXLog.net custom form for ON4KST using the classic interactive telnet feed.
 // This is based on the behaviour found in the dxKst custom form:
 //   host www.on4kst.info, port 23000, login prompt, password prompt, room prompt,
@@ -11,12 +11,14 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
 using System.IO;
+using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using DXLog.net;
 using DXLogDAL;
@@ -25,8 +27,8 @@ namespace DXLog.net
 {
     public class KstChatBridge : KForm
     {
-        private const int UserListPanelWidth = 540;
-        private const int UserListPanelMinWidth = 520;
+        private const int UserListPanelWidth = 620;
+        private const int UserListPanelMinWidth = 600;
 
         public static string CusWinName { get { return "KST Chat Bridge"; } }
         public static int CusFormID { get { return 18657; } }
@@ -60,6 +62,27 @@ namespace DXLog.net
         private Button _sendButton;
         private Button _cqButton;
         private Label _statusLabel;
+        private Label _airScoutStatusLabel;
+        private AirScoutClient _airScout;
+        private System.Windows.Forms.Timer _airScoutRefreshTimer;
+        private DateTime _lastAirScoutReplyUtc = DateTime.MinValue;
+        private DateTime _lastAirScoutQueryUtc = DateTime.MinValue;
+        private string _lastAirScoutQueryCall = "";
+        private long _lastAirScoutQueryQrg = 0;
+        private readonly Dictionary<string, AirScoutPathResult> _airScoutResults = new Dictionary<string, AirScoutPathResult>(StringComparer.OrdinalIgnoreCase);
+        private readonly Queue<string> _airScoutScanQueue = new Queue<string>();
+        private readonly HashSet<string> _airScoutScanQueuedCalls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private string _airScoutPendingAutoCall = "";
+        private DateTime _airScoutPendingAutoSinceUtc = DateTime.MinValue;
+        private DateTime _lastAirScoutFullScanUtc = DateTime.MinValue;
+        private int _airScoutScanTotal = 0;
+        private int _airScoutScanCompleted = 0;
+        private long _airScoutAutoScanQrg = 0;
+        private readonly object _airScoutPlaneLock = new object();
+        private readonly Dictionary<string, AirScoutLivePlane> _airScoutPlaneById = new Dictionary<string, AirScoutLivePlane>(StringComparer.OrdinalIgnoreCase);
+        private bool _airScoutPlaneFetchRunning;
+        private DateTime _lastAirScoutPlaneFetchUtc = DateTime.MinValue;
+        private string _airScoutPlaneFeedStatus = "Aircraft not read";
         private Button[] _macroButtons;
         private Button _editMacrosButton;
         private System.Windows.Forms.Timer _userRefreshTimer;
@@ -242,6 +265,16 @@ namespace DXLog.net
                     _startupBoundsRestoreTimer.Stop();
                     _startupBoundsRestoreTimer.Dispose();
                 }
+                if (_airScoutRefreshTimer != null)
+                {
+                    _airScoutRefreshTimer.Stop();
+                    _airScoutRefreshTimer.Dispose();
+                }
+                if (_airScout != null)
+                {
+                    _airScout.Dispose();
+                    _airScout = null;
+                }
                 if (_kst != null)
                     _kst.Dispose();
                 if (_boldFont != null)
@@ -393,9 +426,11 @@ namespace DXLog.net
             _users.Columns.Add("Loc", 75);
             _users.Columns.Add("QTF", 60);
             _users.Columns.Add("QRB", 85);
+            _users.Columns.Add("AS", 48);
+            _users.ShowItemToolTips = true;
             _users.DoubleClick += delegate { PutSelectedUserIntoDxLog(); };
             _users.MouseUp += UsersMouseUp;
-            _users.SelectedIndexChanged += delegate { if (_users.SelectedItems.Count > 0) _lastSelectedCall = _users.SelectedItems[0].Text; RestyleUsers(); RefreshConversationView(); };
+            _users.SelectedIndexChanged += delegate { UsersSelectedIndexChanged(); };
 
             _messageSplit = new SplitContainer();
             _messageSplit.Dock = DockStyle.Fill;
@@ -446,7 +481,9 @@ namespace DXLog.net
             _layout.Controls.Add(_editMacrosButton, 10, 2); _layout.SetColumnSpan(_editMacrosButton, 2);
 
             _statusLabel = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Text = "Ready" };
-            _layout.Controls.Add(_statusLabel, 0, 3); _layout.SetColumnSpan(_statusLabel, 12);
+            _airScoutStatusLabel = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Text = "AirScout: Off" };
+            _layout.Controls.Add(_statusLabel, 0, 3); _layout.SetColumnSpan(_statusLabel, 9);
+            _layout.Controls.Add(_airScoutStatusLabel, 9, 3); _layout.SetColumnSpan(_airScoutStatusLabel, 3);
 
             Controls.Add(_layout);
 
@@ -528,6 +565,17 @@ namespace DXLog.net
                 _qsoLoggedRefreshTimer.Stop();
                 await ForceRefreshAfterQsoLoggedAsync();
             };
+
+            _airScoutRefreshTimer = new System.Windows.Forms.Timer();
+            // Auto-scan one KST station at a time. AirScout normally replies quickly,
+            // so a short UI timer lets the whole list populate without flooding UDP.
+            _airScoutRefreshTimer.Interval = 250;
+            _airScoutRefreshTimer.Tick += delegate
+            {
+                RunAirScoutAutoScanTick();
+                UpdateAirScoutStatusLabel();
+            };
+            ConfigureAirScoutClient();
 
             AdjustUserColumns();
             AdjustMessageColumns();
@@ -1012,17 +1060,18 @@ namespace DXLog.net
 
         private void AdjustUserColumns()
         {
-            if (_users == null || _users.Columns.Count < 5) return;
+            if (_users == null || _users.Columns.Count < 6) return;
 
-            // Fixed DXLog-style user list.  The first four columns stay fixed,
-            // and QRB fills only the small remaining width so there is no large
-            // empty draggable area after the QRB column.
-            int callW = 95;
-            int nameW = 190;
-            int locW = 85;
-            int qtfW = 65;
-            int qrbW = Math.Max(80, _users.ClientSize.Width - callW - nameW - locW - qtfW - 4);
-            int[] widths = new int[] { callW, nameW, locW, qtfW, qrbW };
+            // Keep the AirScout result compact: it only displays NOW, Xm, '-'
+            // or blank. Give the reclaimed space to the more useful Name column.
+            int callW = 90;
+            int locW = 80;
+            int qtfW = 60;
+            int qrbW = 80;
+            const int asW = 48;
+            int nameW = Math.Max(145,
+                _users.ClientSize.Width - callW - locW - qtfW - qrbW - asW - 4);
+            int[] widths = new int[] { callW, nameW, locW, qtfW, qrbW, asW };
 
             for (int i = 0; i < widths.Length; i++)
             {
@@ -1039,11 +1088,23 @@ namespace DXLog.net
         private void AdjustMessageColumns(ListView list)
         {
             if (list == null || list.Columns.Count < 4) return;
-            int fixedWidth = 70 + 90 + 120 + 28;
-            int msgWidth = Math.Max(220, list.ClientSize.Width - fixedWidth);
-            list.Columns[0].Width = 70;
-            list.Columns[1].Width = 90;
-            list.Columns[2].Width = 120;
+
+            // ClientSize already excludes a native vertical scrollbar when one is
+            // present.  The previous extra 28 px allowance therefore left a large
+            // unpainted section at the right of the owner-drawn header, which
+            // Windows displayed as a white square.  Fill the available header
+            // width and retain only a two-pixel safety margin for the border.
+            const int utcWidth = 70;
+            const int fromWidth = 90;
+            const int nameWidth = 120;
+            const int edgeMargin = 2;
+
+            int msgWidth = Math.Max(220,
+                list.ClientSize.Width - utcWidth - fromWidth - nameWidth - edgeMargin);
+
+            list.Columns[0].Width = utcWidth;
+            list.Columns[1].Width = fromWidth;
+            list.Columns[2].Width = nameWidth;
             list.Columns[3].Width = msgWidth;
         }
 
@@ -1070,6 +1131,7 @@ namespace DXLog.net
             if (_layout != null) { _layout.BackColor = windowBack; _layout.ForeColor = windowFore; }
             if (_split != null) { _split.BackColor = windowBack; _split.ForeColor = windowFore; }
             if (_statusLabel != null) { _statusLabel.BackColor = windowBack; _statusLabel.ForeColor = windowFore; }
+            if (_airScoutStatusLabel != null) { _airScoutStatusLabel.BackColor = windowBack; _airScoutStatusLabel.ForeColor = windowFore; }
             if (_roomTitleBox != null)
             {
                 _roomTitleBox.BackColor = KstColor("List background", SystemColors.Window);
@@ -1349,6 +1411,7 @@ namespace DXLog.net
                 ApplySettingsToUi();
                 _settings.Save();
                 RecalculateAllUsers();
+                ConfigureAirScoutClient();
                 if (_kst != null && _kst.IsConnected)
                 {
                     // ON4KST only reliably publishes your displayed name/locator during login/room join.
@@ -1867,7 +1930,9 @@ namespace DXLog.net
                 item.SubItems.Add(user.Locator ?? "");
                 item.SubItems.Add(qtf);
                 item.SubItems.Add(qrb);
+                item.SubItems.Add(GetAirScoutDisplay(user.Call));
                 item.Tag = user;
+                UpdateAirScoutItemToolTip(item);
                 StyleUserItem(item, user);
                 _users.Items.Add(item);
             }
@@ -1877,7 +1942,10 @@ namespace DXLog.net
                 item.SubItems[2].Text = user.Locator ?? "";
                 item.SubItems[3].Text = qtf;
                 item.SubItems[4].Text = qrb;
+                while (item.SubItems.Count < 6) item.SubItems.Add("");
+                item.SubItems[5].Text = GetAirScoutDisplay(user.Call);
                 item.Tag = user;
+                UpdateAirScoutItemToolTip(item);
                 StyleUserItem(item, user);
             }
             SortUsers();
@@ -1920,7 +1988,7 @@ namespace DXLog.net
 
         private void UsersColumnClick(object sender, ColumnClickEventArgs e)
         {
-            if (e.Column != 0 && e.Column != 2 && e.Column != 3 && e.Column != 4) return;
+            if (e.Column != 0 && e.Column != 2 && e.Column != 3 && e.Column != 4 && e.Column != 5) return;
 
             if (_userSortColumn == e.Column)
                 _userSortOrder = (_userSortOrder == SortOrder.Ascending) ? SortOrder.Descending : SortOrder.Ascending;
@@ -1946,8 +2014,8 @@ namespace DXLog.net
 
         private void UpdateUserColumnHeaders()
         {
-            if (_users == null || _users.Columns.Count < 5) return;
-            string[] headers = new string[] { "Call", "Name", "Loc", "QTF", "QRB" };
+            if (_users == null || _users.Columns.Count < 6) return;
+            string[] headers = new string[] { "Call", "Name", "Loc", "QTF", "QRB", "AS" };
             for (int i = 0; i < headers.Length; i++)
             {
                 string suffix = "";
@@ -1989,6 +2057,11 @@ namespace DXLog.net
             menu.Items.Add("Message " + call, null, async delegate { await CqCall(call); });
             menu.Items.Add("Copy call", null, delegate { if (!String.IsNullOrWhiteSpace(call)) Clipboard.SetText(call); });
             menu.Items.Add("Send message...", null, async delegate { await SendMessageToCall(call, ""); });
+            menu.Items.Add(new ToolStripSeparator());
+            ToolStripMenuItem showInAirScout = new ToolStripMenuItem("Show path in AirScout");
+            showInAirScout.Enabled = CanQueryAirScoutForCall(call);
+            showInAirScout.Click += delegate { ShowCallPathInAirScout(call); };
+            menu.Items.Add(showInAirScout);
             return menu;
         }
 
@@ -2512,7 +2585,387 @@ namespace DXLog.net
             SafeUi(delegate
             {
                 UpdateStatus("DXLog radio " + (_contestData != null ? _contestData.FocusedRadio.ToString() : "?") + " | KST " + KstRoomTitles.GetTitle(_settings.Room) + " " + (_kst != null && _kst.IsConnected ? "connected" : "not connected"));
+                _airScoutResults.Clear();
+                RefreshAllAirScoutCells();
+                ResetAirScoutAutoScan(true);
+                QuerySelectedUserInAirScout(true);
             });
+        }
+
+        private void UsersSelectedIndexChanged()
+        {
+            if (_users != null && _users.SelectedItems.Count > 0)
+            {
+                _lastSelectedCall = _users.SelectedItems[0].Text;
+                QuerySelectedUserInAirScout(true);
+            }
+            RestyleUsers();
+            RefreshConversationView();
+            RefreshMapWindow();
+        }
+
+        private void ConfigureAirScoutClient()
+        {
+            try
+            {
+                if (_airScoutRefreshTimer != null) _airScoutRefreshTimer.Stop();
+                if (_airScout != null)
+                {
+                    _airScout.PathResultReceived -= AirScoutPathResultReceived;
+                    _airScout.StatusChanged -= AirScoutStatusChanged;
+                    _airScout.Dispose();
+                    _airScout = null;
+                }
+
+                _lastAirScoutReplyUtc = DateTime.MinValue;
+                _lastAirScoutQueryUtc = DateTime.MinValue;
+                _lastAirScoutQueryCall = "";
+                _lastAirScoutQueryQrg = 0;
+                ResetAirScoutAutoScan(true);
+                _airScoutResults.Clear();
+                lock (_airScoutPlaneLock)
+                {
+                    _airScoutPlaneById.Clear();
+                    _lastAirScoutPlaneFetchUtc = DateTime.MinValue;
+                    _airScoutPlaneFeedStatus = "Aircraft not read";
+                }
+                RefreshAllAirScoutCells();
+                if (_settings == null || !_settings.AirScoutEnabled)
+                {
+                    UpdateAirScoutStatusLabel();
+                    RefreshAllAirScoutCells();
+                    return;
+                }
+
+                _airScout = new AirScoutClient(_settings.AirScoutPort, "KST", "AS");
+                _airScout.PathResultReceived += AirScoutPathResultReceived;
+                _airScout.StatusChanged += AirScoutStatusChanged;
+                _airScout.Start();
+                if (_airScoutRefreshTimer != null) _airScoutRefreshTimer.Start();
+                ResetAirScoutAutoScan(true);
+                UpdateAirScoutStatusLabel();
+                QuerySelectedUserInAirScout(true);
+            }
+            catch (Exception ex)
+            {
+                if (_airScoutStatusLabel != null) _airScoutStatusLabel.Text = "AirScout: Error";
+                UpdateStatus("AirScout setup failed: " + ex.Message);
+            }
+        }
+
+        private void AirScoutStatusChanged(string status)
+        {
+            SafeUi(delegate
+            {
+                if (!String.IsNullOrWhiteSpace(status) && status.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (_airScoutStatusLabel != null) _airScoutStatusLabel.Text = "AirScout: Error";
+                    UpdateStatus("AirScout " + status);
+                }
+                else
+                {
+                    UpdateAirScoutStatusLabel();
+                }
+            });
+        }
+
+        private void AirScoutPathResultReceived(AirScoutPathResult result)
+        {
+            if (result == null || String.IsNullOrWhiteSpace(result.DxCall)) return;
+            SafeUi(delegate
+            {
+                string call = CleanCall(result.DxCall);
+                if (String.IsNullOrWhiteSpace(call)) return;
+                _airScoutResults[call] = result;
+                _lastAirScoutReplyUtc = DateTime.UtcNow;
+                if (String.Equals(_airScoutPendingAutoCall, call, StringComparison.OrdinalIgnoreCase))
+                {
+                    _airScoutPendingAutoCall = "";
+                    _airScoutPendingAutoSinceUtc = DateTime.MinValue;
+                    _airScoutScanCompleted++;
+                    if (_airScoutScanCompleted > _airScoutScanTotal) _airScoutScanCompleted = _airScoutScanTotal;
+                    if (_airScoutScanQueue.Count == 0) _lastAirScoutFullScanUtc = DateTime.UtcNow;
+                }
+                UpdateAirScoutRow(call);
+                UpdateAirScoutStatusLabel();
+                RefreshMapWindow();
+            });
+        }
+
+        private void UpdateAirScoutStatusLabel()
+        {
+            if (_airScoutStatusLabel == null) return;
+            if (_settings == null || !_settings.AirScoutEnabled)
+            {
+                _airScoutStatusLabel.Text = "AirScout: Off";
+                return;
+            }
+            if (_airScout == null || !_airScout.IsListening)
+            {
+                _airScoutStatusLabel.Text = "AirScout: Error";
+                return;
+            }
+            if (_lastAirScoutReplyUtc != DateTime.MinValue && DateTime.UtcNow - _lastAirScoutReplyUtc < TimeSpan.FromSeconds(60))
+            {
+                if (_airScoutScanTotal > 0 && (_airScoutScanQueue.Count > 0 || !String.IsNullOrWhiteSpace(_airScoutPendingAutoCall)))
+                    _airScoutStatusLabel.Text = "AirScout: OK  " + Math.Min(_airScoutScanCompleted, _airScoutScanTotal).ToString() + "/" + _airScoutScanTotal.ToString();
+                else
+                    _airScoutStatusLabel.Text = "AirScout: OK";
+                return;
+            }
+            if (_lastAirScoutQueryUtc != DateTime.MinValue)
+            {
+                string call = String.IsNullOrWhiteSpace(_lastAirScoutQueryCall) ? "" : " " + _lastAirScoutQueryCall;
+                _airScoutStatusLabel.Text = "AirScout: Waiting" + call;
+                return;
+            }
+            _airScoutStatusLabel.Text = "AirScout: Listening";
+        }
+
+        private void ResetAirScoutAutoScan(bool startImmediately)
+        {
+            _airScoutScanQueue.Clear();
+            _airScoutScanQueuedCalls.Clear();
+            _airScoutPendingAutoCall = "";
+            _airScoutPendingAutoSinceUtc = DateTime.MinValue;
+            _airScoutScanTotal = 0;
+            _airScoutScanCompleted = 0;
+            _airScoutAutoScanQrg = GetAirScoutFrequency100Hz();
+            _lastAirScoutFullScanUtc = startImmediately ? DateTime.MinValue : DateTime.UtcNow;
+        }
+
+        private void BuildAirScoutAutoScanQueue()
+        {
+            _airScoutScanQueue.Clear();
+            _airScoutScanQueuedCalls.Clear();
+            _airScoutScanCompleted = 0;
+            _airScoutScanTotal = 0;
+            _airScoutAutoScanQrg = GetAirScoutFrequency100Hz();
+
+            if (_users == null || _settings == null || !_settings.AirScoutEnabled) return;
+
+            string myCall = CleanCall(_settings.Callsign);
+            foreach (ListViewItem item in _users.Items)
+            {
+                string call = CleanCall(item.Text);
+                if (String.IsNullOrWhiteSpace(call) || String.Equals(call, myCall, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!CanQueryAirScoutForCall(call)) continue;
+                if (_airScoutScanQueuedCalls.Add(call)) _airScoutScanQueue.Enqueue(call);
+            }
+            _airScoutScanTotal = _airScoutScanQueue.Count;
+        }
+
+        private void RunAirScoutAutoScanTick()
+        {
+            if (_settings == null || !_settings.AirScoutEnabled || _airScout == null || !_airScout.IsListening) return;
+
+            long qrg = GetAirScoutFrequency100Hz();
+            if (qrg <= 0) return;
+            if (_airScoutAutoScanQrg != 0 && qrg != _airScoutAutoScanQrg)
+            {
+                // Results are band-specific. Clear the old band immediately and rescan.
+                _airScoutResults.Clear();
+                RefreshAllAirScoutCells();
+                ResetAirScoutAutoScan(true);
+            }
+
+            if (!String.IsNullOrWhiteSpace(_airScoutPendingAutoCall))
+            {
+                // ASNEAREST normally arrives almost immediately. After two seconds,
+                // move on so one bad path can never stall the whole KST list.
+                if (DateTime.UtcNow - _airScoutPendingAutoSinceUtc < TimeSpan.FromSeconds(2)) return;
+                _airScoutPendingAutoCall = "";
+                _airScoutPendingAutoSinceUtc = DateTime.MinValue;
+                _airScoutScanCompleted++;
+                if (_airScoutScanCompleted > _airScoutScanTotal) _airScoutScanCompleted = _airScoutScanTotal;
+            }
+
+            if (_airScoutScanQueue.Count == 0)
+            {
+                if (_airScoutScanTotal > 0 && _airScoutScanCompleted >= _airScoutScanTotal)
+                {
+                    if (_lastAirScoutFullScanUtc == DateTime.MinValue) _lastAirScoutFullScanUtc = DateTime.UtcNow;
+                    // Refresh the complete room periodically. New/changed KST users are
+                    // also picked up automatically on the next cycle.
+                    if (DateTime.UtcNow - _lastAirScoutFullScanUtc < TimeSpan.FromSeconds(20)) return;
+                }
+                BuildAirScoutAutoScanQueue();
+                if (_airScoutScanQueue.Count == 0) return;
+                _lastAirScoutFullScanUtc = DateTime.MinValue;
+            }
+
+            string callToQuery = _airScoutScanQueue.Dequeue();
+            _airScoutScanQueuedCalls.Remove(callToQuery);
+            if (!CanQueryAirScoutForCall(callToQuery))
+            {
+                _airScoutScanCompleted++;
+                return;
+            }
+
+            _airScoutPendingAutoCall = callToQuery;
+            _airScoutPendingAutoSinceUtc = DateTime.UtcNow;
+            QueryCallInAirScout(callToQuery, false, false);
+        }
+
+        private bool CanQueryAirScoutForCall(string call)
+        {
+            if (_settings == null || !_settings.AirScoutEnabled || _airScout == null || !_airScout.IsListening) return false;
+            call = CleanCall(call);
+            if (String.IsNullOrWhiteSpace(call)) return false;
+            string myCall = CleanCall(_settings.Callsign);
+            string myLoc = NormalizeLocator(GetOwnLocator());
+            string dxLoc = NormalizeLocator(GetKstLocatorForCall(call));
+            return !String.IsNullOrWhiteSpace(myCall) && IsValidLocator(myLoc) && IsValidLocator(dxLoc) && GetAirScoutFrequency100Hz() > 0;
+        }
+
+        private void QuerySelectedUserInAirScout(bool showValidationStatus)
+        {
+            if (_users == null || _users.SelectedItems.Count == 0) return;
+            QueryCallInAirScout(_users.SelectedItems[0].Text, false, showValidationStatus);
+        }
+
+        private void ShowCallPathInAirScout(string call)
+        {
+            QueryCallInAirScout(call, true, true);
+        }
+
+        private void QueryCallInAirScout(string call, bool showPath, bool showValidationStatus)
+        {
+            try
+            {
+                if (_settings == null || !_settings.AirScoutEnabled || _airScout == null || !_airScout.IsListening)
+                {
+                    if (showValidationStatus) UpdateStatus("AirScout is not enabled or its UDP listener is not available");
+                    return;
+                }
+
+                call = CleanCall(call);
+                string myCall = CleanCall(_settings.Callsign);
+                string myLoc = NormalizeLocator(GetOwnLocator());
+                string dxLoc = NormalizeLocator(GetKstLocatorForCall(call));
+                long qrg = GetAirScoutFrequency100Hz();
+
+                if (String.IsNullOrWhiteSpace(myCall))
+                {
+                    if (showValidationStatus) UpdateStatus("AirScout needs your callsign in Setup");
+                    return;
+                }
+                if (!IsValidLocator(myLoc))
+                {
+                    if (showValidationStatus) UpdateStatus("AirScout needs a valid own QTH locator in Setup");
+                    return;
+                }
+                if (!IsValidLocator(dxLoc))
+                {
+                    if (showValidationStatus) UpdateStatus("No valid KST locator for " + call + " - cannot set AirScout path");
+                    return;
+                }
+                if (qrg <= 0)
+                {
+                    if (showValidationStatus) UpdateStatus("No valid DXLog radio frequency - cannot set AirScout path");
+                    return;
+                }
+
+                string data = qrg.ToString() + "," + myCall + "," + myLoc + "," + call + "," + dxLoc;
+                _lastAirScoutQueryUtc = DateTime.UtcNow;
+                _lastAirScoutQueryCall = call;
+                _lastAirScoutQueryQrg = qrg;
+                _airScout.SendSetPath(data);
+                UpdateAirScoutStatusLabel();
+                if (showValidationStatus)
+                    UpdateStatus("AirScout TX: " + call + " " + dxLoc + " @ " + qrg.ToString() + " (100 Hz units)");
+                if (showPath)
+                {
+                    _airScout.SendShowPath(data);
+                    UpdateStatus("AirScout path shown: " + myCall + " " + myLoc + " to " + call + " " + dxLoc);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (showValidationStatus) UpdateStatus("AirScout query failed: " + ex.Message);
+            }
+        }
+
+        private long GetAirScoutFrequency100Hz()
+        {
+            DxRadioSnapshot dx = GetDxRadioSnapshot();
+            long khz;
+            if (!Int64.TryParse(dx.FrequencyText, out khz) || khz <= 0) return 0;
+
+            // AirScout / wtKST use canonical band frequencies in 100 Hz units
+            // (for example 1440000 for 144 MHz), rather than the exact VFO.
+            // Mapping the live DXLog frequency to its amateur band also avoids
+            // dummy/test VFO values such as 142000 kHz being rejected by AirScout.
+            if (khz >= 50000 && khz < 54000) return 500000L;
+            if (khz >= 70000 && khz < 71000) return 700000L;
+            if (khz >= 140000 && khz < 150000) return 1440000L;
+            if (khz >= 420000 && khz < 450000) return 4320000L;
+            if (khz >= 1240000 && khz < 1320000) return 12960000L;
+            if (khz >= 2300000 && khz < 2450000) return 23200000L;
+            if (khz >= 3300000 && khz < 3500000) return 34000000L;
+            if (khz >= 5650000 && khz < 5850000) return 57600000L;
+            if (khz >= 10000000 && khz < 10500000) return 103680000L;
+
+            // Fallback for other frequencies: preserve the original exact-VFO behavior.
+            return khz * 10L;
+        }
+
+        private string GetAirScoutDisplay(string call)
+        {
+            if (_settings == null || !_settings.AirScoutEnabled) return "";
+            AirScoutPathResult result;
+            if (!_airScoutResults.TryGetValue(CleanCall(call), out result) || result == null) return "";
+            AirScoutPlaneInfo best = result.GetBestPlane();
+            if (best == null) return "-";
+            return best.Mins <= 0 ? "NOW" : best.Mins.ToString() + "m";
+        }
+
+        private void RefreshAllAirScoutCells()
+        {
+            if (_users == null) return;
+            foreach (ListViewItem item in _users.Items)
+            {
+                while (item.SubItems.Count < 6) item.SubItems.Add("");
+                item.SubItems[5].Text = GetAirScoutDisplay(item.Text);
+                UpdateAirScoutItemToolTip(item);
+            }
+        }
+
+        private void UpdateAirScoutRow(string call)
+        {
+            if (_users == null) return;
+            foreach (ListViewItem item in _users.Items)
+            {
+                if (!String.Equals(CleanCall(item.Text), CleanCall(call), StringComparison.OrdinalIgnoreCase)) continue;
+                while (item.SubItems.Count < 6) item.SubItems.Add("");
+                item.SubItems[5].Text = GetAirScoutDisplay(call);
+                UpdateAirScoutItemToolTip(item);
+                break;
+            }
+        }
+
+        private void UpdateAirScoutItemToolTip(ListViewItem item)
+        {
+            if (item == null)
+                return;
+            AirScoutPathResult result;
+            if (!_airScoutResults.TryGetValue(CleanCall(item.Text), out result) || result == null)
+            {
+                item.ToolTipText = "";
+                return;
+            }
+            AirScoutPlaneInfo best = result.GetBestPlane();
+            if (best == null)
+            {
+                item.ToolTipText = "AirScout: no suitable aircraft reported for " + item.Text;
+                return;
+            }
+            string opportunity = best.Mins <= 0 ? "now" : "in " + best.Mins.ToString() + " min";
+            item.ToolTipText = "AirScout " + item.Text + Environment.NewLine +
+                "Aircraft: " + best.Call + (String.IsNullOrWhiteSpace(best.Category) ? "" : " (" + best.Category + ")") + Environment.NewLine +
+                "Opportunity: " + opportunity + Environment.NewLine +
+                "Potential: " + best.Potential.ToString() + Environment.NewLine +
+                "Intersection QRB: " + best.IntQRB.ToString() + " km";
         }
 
         private void SetConnectionUi(bool connected)
@@ -2549,6 +3002,192 @@ namespace DXLog.net
                 if (InvokeRequired) BeginInvoke(action); else action();
             }
             catch { }
+        }
+
+
+        private void BeginRefreshAirScoutLivePlanes(bool force)
+        {
+            if (_settings == null || !_settings.AirScoutEnabled) return;
+            int httpPort = _settings.AirScoutHttpPort > 0 ? _settings.AirScoutHttpPort : 9880;
+            lock (_airScoutPlaneLock)
+            {
+                if (_airScoutPlaneFetchRunning) return;
+                if (!force && _lastAirScoutPlaneFetchUtc != DateTime.MinValue &&
+                    DateTime.UtcNow - _lastAirScoutPlaneFetchUtc < TimeSpan.FromSeconds(5)) return;
+                _airScoutPlaneFetchRunning = true;
+            }
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    string url = "http://127.0.0.1:" + httpPort.ToString() + "/planes.json";
+                    HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+                    request.Method = "GET";
+                    request.Proxy = null;
+                    request.Timeout = 3000;
+                    request.ReadWriteTimeout = 3000;
+                    request.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
+                    string json;
+                    using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                    using (Stream stream = response.GetResponseStream())
+                    using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
+                        json = reader.ReadToEnd();
+
+                    Dictionary<string, AirScoutLivePlane> parsed = ParseAirScoutPlanesJson(json);
+                    lock (_airScoutPlaneLock)
+                    {
+                        _airScoutPlaneById.Clear();
+                        foreach (KeyValuePair<string, AirScoutLivePlane> kv in parsed)
+                            _airScoutPlaneById[kv.Key] = kv.Value;
+                        _lastAirScoutPlaneFetchUtc = DateTime.UtcNow;
+                        int unique = new HashSet<AirScoutLivePlane>(_airScoutPlaneById.Values).Count;
+                        _airScoutPlaneFeedStatus = unique.ToString() + " live aircraft";
+                    }
+                    SafeUi(delegate { RefreshMapWindow(); });
+                }
+                catch (Exception ex)
+                {
+                    lock (_airScoutPlaneLock)
+                    {
+                        _lastAirScoutPlaneFetchUtc = DateTime.UtcNow;
+                        _airScoutPlaneFeedStatus = "Aircraft feed: " + ex.Message;
+                    }
+                    SafeUi(delegate { RefreshMapWindow(); });
+                }
+                finally
+                {
+                    lock (_airScoutPlaneLock) _airScoutPlaneFetchRunning = false;
+                }
+            });
+        }
+
+        private static Dictionary<string, AirScoutLivePlane> ParseAirScoutPlanesJson(string json)
+        {
+            Dictionary<string, AirScoutLivePlane> byId = new Dictionary<string, AirScoutLivePlane>(StringComparer.OrdinalIgnoreCase);
+            if (String.IsNullOrWhiteSpace(json)) return byId;
+
+            JavaScriptSerializer serializer = new JavaScriptSerializer();
+            serializer.MaxJsonLength = Int32.MaxValue;
+            object rootObject = serializer.DeserializeObject(json);
+            Dictionary<string, object> root = rootObject as Dictionary<string, object>;
+            if (root == null) return byId;
+
+            long nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            foreach (KeyValuePair<string, object> kv in root)
+            {
+                object[] values = kv.Value as object[];
+                if (values == null || values.Length < 11) continue;
+
+                double lat = ToDouble(values, 1, Double.NaN);
+                double lon = ToDouble(values, 2, Double.NaN);
+                if (Double.IsNaN(lat) || Double.IsNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) continue;
+
+                long reportedUnix = ToLong(values, 10, 0);
+                if (reportedUnix > 0 && nowUnix - reportedUnix > 600) continue;
+
+                AirScoutLivePlane plane = new AirScoutLivePlane
+                {
+                    Hex = ToText(values, 0),
+                    Lat = lat,
+                    Lon = lon,
+                    Track = ToDouble(values, 3, 0),
+                    AltitudeFt = (int)Math.Round(ToDouble(values, 4, 0), 0),
+                    SpeedKt = (int)Math.Round(ToDouble(values, 5, 0), 0),
+                    Type = ToText(values, 8),
+                    Registration = ToText(values, 9),
+                    ReportedUnix = reportedUnix,
+                    Flight = ToText(values, 13),
+                    Call = ToText(values, 16)
+                };
+
+                AddAirScoutPlaneKey(byId, plane.Call, plane);
+                AddAirScoutPlaneKey(byId, plane.Flight, plane);
+                AddAirScoutPlaneKey(byId, plane.Registration, plane);
+                AddAirScoutPlaneKey(byId, plane.Hex, plane);
+            }
+            return byId;
+        }
+
+        private static string ToText(object[] values, int index)
+        {
+            if (values == null || index < 0 || index >= values.Length || values[index] == null) return "";
+            return Convert.ToString(values[index], System.Globalization.CultureInfo.InvariantCulture).Trim();
+        }
+
+        private static double ToDouble(object[] values, int index, double fallback)
+        {
+            if (values == null || index < 0 || index >= values.Length || values[index] == null) return fallback;
+            try { return Convert.ToDouble(values[index], System.Globalization.CultureInfo.InvariantCulture); }
+            catch { return fallback; }
+        }
+
+        private static long ToLong(object[] values, int index, long fallback)
+        {
+            if (values == null || index < 0 || index >= values.Length || values[index] == null) return fallback;
+            try { return Convert.ToInt64(values[index], System.Globalization.CultureInfo.InvariantCulture); }
+            catch { return fallback; }
+        }
+
+        private static string NormalizeAircraftId(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value)) return "";
+            return Regex.Replace(value.Trim().ToUpperInvariant(), "[^A-Z0-9]+", "");
+        }
+
+        private static void AddAirScoutPlaneKey(Dictionary<string, AirScoutLivePlane> byId, string key, AirScoutLivePlane plane)
+        {
+            key = NormalizeAircraftId(key);
+            if (String.IsNullOrWhiteSpace(key) || plane == null) return;
+            byId[key] = plane;
+        }
+
+        private List<KstMapAircraft> GetSelectedAirScoutAircraftSnapshot()
+        {
+            List<KstMapAircraft> result = new List<KstMapAircraft>();
+            string selectedCall = CleanCall(_lastSelectedCall);
+            if (String.IsNullOrWhiteSpace(selectedCall)) return result;
+
+            AirScoutPathResult pathResult;
+            if (!_airScoutResults.TryGetValue(selectedCall, out pathResult) || pathResult == null) return result;
+
+            Dictionary<string, AirScoutLivePlane> liveById;
+            lock (_airScoutPlaneLock)
+                liveById = new Dictionary<string, AirScoutLivePlane>(_airScoutPlaneById, StringComparer.OrdinalIgnoreCase);
+
+            HashSet<AirScoutLivePlane> used = new HashSet<AirScoutLivePlane>();
+            foreach (AirScoutPlaneInfo candidate in pathResult.Planes)
+            {
+                if (candidate == null || candidate.Mins >= 30) continue;
+                string key = NormalizeAircraftId(candidate.Call);
+                AirScoutLivePlane live;
+                if (String.IsNullOrWhiteSpace(key) || !liveById.TryGetValue(key, out live) || live == null || !used.Add(live)) continue;
+                result.Add(new KstMapAircraft
+                {
+                    Call = !String.IsNullOrWhiteSpace(candidate.Call) ? candidate.Call.Trim() : live.DisplayName,
+                    Lat = live.Lat,
+                    Lon = live.Lon,
+                    Track = live.Track,
+                    AltitudeFt = live.AltitudeFt,
+                    SpeedKt = live.SpeedKt,
+                    Mins = candidate.Mins,
+                    Potential = candidate.Potential,
+                    IntQRB = candidate.IntQRB,
+                    Category = candidate.Category ?? ""
+                });
+            }
+            result.Sort(delegate(KstMapAircraft a, KstMapAircraft b)
+            {
+                int c = a.Mins.CompareTo(b.Mins);
+                if (c != 0) return c;
+                return b.Potential.CompareTo(a.Potential);
+            });
+            return result;
+        }
+
+        private string GetAirScoutPlaneFeedStatus()
+        {
+            lock (_airScoutPlaneLock) return _airScoutPlaneFeedStatus;
         }
 
 
@@ -2784,11 +3423,26 @@ namespace DXLog.net
             public bool IsSelected;
         }
 
+        private sealed class KstMapAircraft
+        {
+            public string Call;
+            public string Category;
+            public double Lat;
+            public double Lon;
+            public double Track;
+            public int AltitudeFt;
+            public int SpeedKt;
+            public int Mins;
+            public int Potential;
+            public int IntQRB;
+        }
+
         private sealed class KstUserMapForm : Form
         {
             private readonly KstChatBridge _owner;
             private readonly KstMapCanvas _canvas;
             private readonly CheckBox _turnRotator;
+            private readonly CheckBox _showAirScout;
             private readonly Button _refreshButton;
             private readonly Button _zoomInButton;
             private readonly Button _zoomOutButton;
@@ -2829,6 +3483,7 @@ namespace DXLog.net
                 _zoomOutButton = new Button { Text = "Zoom -", Dock = DockStyle.Fill };
                 _zoomResetButton = new Button { Text = "Fit", Dock = DockStyle.Fill };
                 _turnRotator = new CheckBox { Text = "Turn rotator on click", Checked = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+                _showAirScout = new CheckBox { Text = "Show AirScout path and aircraft", Checked = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
                 _status = new Label { Text = "Click a station to select it in DXLog", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
 
                 _canvas = new KstMapCanvas(owner);
@@ -2840,7 +3495,7 @@ namespace DXLog.net
                 layout.Controls.Add(_zoomOutButton, 2, 0);
                 layout.Controls.Add(_zoomResetButton, 3, 0);
                 layout.Controls.Add(_turnRotator, 4, 0);
-                layout.Controls.Add(new Label { Text = "KST station positions from QRA locators", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 5, 0);
+                layout.Controls.Add(_showAirScout, 5, 0);
                 Button closeButton = new Button { Text = "Close", Dock = DockStyle.Fill };
                 closeButton.Click += delegate { Close(); };
                 layout.Controls.Add(closeButton, 6, 0);
@@ -2852,10 +3507,11 @@ namespace DXLog.net
                 _zoomInButton.Click += delegate { _canvas.ZoomIn(); UpdateZoomStatus(); };
                 _zoomOutButton.Click += delegate { _canvas.ZoomOut(); UpdateZoomStatus(); };
                 _zoomResetButton.Click += delegate { _canvas.ResetZoom(); UpdateZoomStatus(); };
+                _showAirScout.CheckedChanged += delegate { RefreshStations(); };
                 Shown += delegate { RefreshStations(); };
 
                 _refreshTimer = new System.Windows.Forms.Timer();
-                _refreshTimer.Interval = 10000;
+                _refreshTimer.Interval = 5000;
                 _refreshTimer.Tick += delegate { RefreshStations(); };
                 _refreshTimer.Start();
             }
@@ -2944,8 +3600,25 @@ namespace DXLog.net
                     KstMapStation own;
                     _canvas.OwnStation = _owner.TryGetOwnMapPoint(out own) ? own : null;
                     _canvas.Stations = _owner.GetMapStationsSnapshot();
+                    _canvas.SelectedStation = null;
+                    foreach (KstMapStation station in _canvas.Stations)
+                    {
+                        if (station != null && station.IsSelected) { _canvas.SelectedStation = station; break; }
+                    }
+
+                    if (_showAirScout.Checked)
+                    {
+                        _owner.BeginRefreshAirScoutLivePlanes(false);
+                        _canvas.Aircraft = _owner.GetSelectedAirScoutAircraftSnapshot();
+                    }
+                    else
+                        _canvas.Aircraft = new List<KstMapAircraft>();
+
                     _canvas.Invalidate();
-                    _status.Text = _canvas.Stations.Count.ToString() + " stations with valid locators";
+                    if (_canvas.SelectedStation != null && _showAirScout.Checked)
+                        _status.Text = _canvas.SelectedStation.Call + " path - " + _canvas.Aircraft.Count.ToString() + " matched aircraft - " + _owner.GetAirScoutPlaneFeedStatus();
+                    else
+                        _status.Text = _canvas.Stations.Count.ToString() + " stations with valid locators";
                 }
                 catch { }
             }
@@ -2963,6 +3636,7 @@ namespace DXLog.net
             {
                 if (station == null) return;
                 _owner.SelectStationFromMap(station, _turnRotator.Checked);
+                RefreshStations();
                 _status.Text = "Selected " + station.Call + " " + station.Locator + " " + station.Qtf + " " + station.Qrb;
             }
         }
@@ -2991,6 +3665,8 @@ namespace DXLog.net
 
             public List<KstMapStation> Stations = new List<KstMapStation>();
             public KstMapStation OwnStation;
+            public KstMapStation SelectedStation;
+            public List<KstMapAircraft> Aircraft = new List<KstMapAircraft>();
             public event Action<KstMapStation> StationClicked;
 
             public KstMapCanvas(KstChatBridge owner)
@@ -3012,9 +3688,20 @@ namespace DXLog.net
                 get { return "z" + _tileZoom.ToString(); }
             }
 
+            private void CentreZoomOnHome()
+            {
+                // Zooming is always anchored on the operator's home station.
+                // A deliberate drag may pan the map temporarily, but the next
+                // zoom-in or zoom-out returns the viewport centre to home.
+                if (OwnStation == null) return;
+                _centerLat = Clamp(OwnStation.Lat, -82, 82);
+                _centerLon = NormalizeLon(OwnStation.Lon);
+            }
+
             public void ZoomIn()
             {
                 _fitPending = false;
+                CentreZoomOnHome();
                 _tileZoom = Math.Min(MaxTileZoom, _tileZoom + 1);
                 Invalidate();
             }
@@ -3022,6 +3709,7 @@ namespace DXLog.net
             public void ZoomOut()
             {
                 _fitPending = false;
+                CentreZoomOnHome();
                 _tileZoom = Math.Max(MinTileZoom, _tileZoom - 1);
                 Invalidate();
             }
@@ -3057,7 +3745,9 @@ namespace DXLog.net
                 DrawOpenStreetMapTiles(g, area);
                 DrawGrid(g, area);
                 DrawRangeRings(g, area);
+                DrawSelectedPath(g, area);
                 DrawStations(g, area);
+                DrawAircraft(g, area);
                 using (Pen border = new Pen(Color.SteelBlue)) g.DrawRectangle(border, area);
             }
 
@@ -3334,6 +4024,97 @@ namespace DXLog.net
                 return new GeoPoint { Lat = RadToDeg(lat2), Lon = NormalizeLon(RadToDeg(lon2)) };
             }
 
+
+            private void DrawSelectedPath(Graphics g, Rectangle area)
+            {
+                if (OwnStation == null || SelectedStation == null) return;
+                List<PointF> points = new List<PointF>();
+                GeoPoint a = new GeoPoint { Lat = OwnStation.Lat, Lon = OwnStation.Lon };
+                GeoPoint b = new GeoPoint { Lat = SelectedStation.Lat, Lon = SelectedStation.Lon };
+                for (int i = 0; i <= 72; i++)
+                {
+                    GeoPoint gp = GreatCircleInterpolate(a, b, i / 72.0);
+                    points.Add(Project(area, gp.Lat, gp.Lon));
+                }
+                if (points.Count < 2) return;
+
+                using (Pen outline = new Pen(Color.FromArgb(210, Color.White), 5))
+                using (Pen path = new Pen(Color.FromArgb(235, 20, 90, 205), 2.5f))
+                {
+                    outline.LineJoin = System.Drawing.Drawing2D.LineJoin.Round;
+                    path.LineJoin = System.Drawing.Drawing2D.LineJoin.Round;
+                    g.DrawLines(outline, points.ToArray());
+                    g.DrawLines(path, points.ToArray());
+                }
+
+                PointF mid = points[points.Count / 2];
+                string caption = OwnStation.Call + " - " + SelectedStation.Call + "  " + SelectedStation.Qrb + "  " + SelectedStation.Qtf;
+                using (Font f = new Font(_owner._windowFont.FontFamily, Math.Max(8, _owner._windowFont.Size), FontStyle.Bold))
+                    DrawLabel(g, f, caption, mid.X + 8, mid.Y + 5, Color.Navy, Color.FromArgb(225, Color.White));
+            }
+
+            private static GeoPoint GreatCircleInterpolate(GeoPoint a, GeoPoint b, double fraction)
+            {
+                fraction = Clamp(fraction, 0, 1);
+                double lat1 = DegToRad(a.Lat);
+                double lon1 = DegToRad(a.Lon);
+                double lat2 = DegToRad(b.Lat);
+                double lon2 = DegToRad(b.Lon);
+                double cosD = Math.Sin(lat1) * Math.Sin(lat2) + Math.Cos(lat1) * Math.Cos(lat2) * Math.Cos(lon2 - lon1);
+                cosD = Clamp(cosD, -1, 1);
+                double d = Math.Acos(cosD);
+                if (d < 1e-9) return a;
+                double sinD = Math.Sin(d);
+                double wa = Math.Sin((1 - fraction) * d) / sinD;
+                double wb = Math.Sin(fraction * d) / sinD;
+                double x = wa * Math.Cos(lat1) * Math.Cos(lon1) + wb * Math.Cos(lat2) * Math.Cos(lon2);
+                double y = wa * Math.Cos(lat1) * Math.Sin(lon1) + wb * Math.Cos(lat2) * Math.Sin(lon2);
+                double z = wa * Math.Sin(lat1) + wb * Math.Sin(lat2);
+                return new GeoPoint { Lat = RadToDeg(Math.Atan2(z, Math.Sqrt(x * x + y * y))), Lon = NormalizeLon(RadToDeg(Math.Atan2(y, x))) };
+            }
+
+            private void DrawAircraft(Graphics g, Rectangle area)
+            {
+                if (Aircraft == null || Aircraft.Count == 0) return;
+                using (Font labelFont = new Font(_owner._windowFont.FontFamily, Math.Max(7, _owner._windowFont.Size - 1), FontStyle.Bold))
+                {
+                    foreach (KstMapAircraft plane in Aircraft)
+                    {
+                        if (plane == null) continue;
+                        PointF pt = Project(area, plane.Lat, plane.Lon);
+                        if (pt.X < area.Left - 100 || pt.X > area.Right + 100 || pt.Y < area.Top - 60 || pt.Y > area.Bottom + 60) continue;
+                        Color colour = plane.Mins <= 0 ? Color.LimeGreen : (plane.Mins <= 5 ? Color.Orange : Color.Gold);
+                        DrawAircraftSymbol(g, pt, plane.Track, colour);
+                        string when = plane.Mins <= 0 ? "NOW" : plane.Mins.ToString() + "m";
+                        string label = (String.IsNullOrWhiteSpace(plane.Call) ? "AIRCRAFT" : plane.Call.Trim()) + " " + when;
+                        if (plane.AltitudeFt > 0) label += " " + Math.Round(plane.AltitudeFt / 1000.0, 0).ToString("0") + "kft";
+                        DrawLabel(g, labelFont, label, pt.X + 10, pt.Y - 12, Color.Black, Color.FromArgb(235, colour));
+                    }
+                }
+            }
+
+            private static void DrawAircraftSymbol(Graphics g, PointF center, double track, Color colour)
+            {
+                double r = DegToRad(track);
+                PointF forward = new PointF((float)Math.Sin(r), (float)-Math.Cos(r));
+                PointF right = new PointF(-forward.Y, forward.X);
+                PointF nose = new PointF(center.X + forward.X * 10, center.Y + forward.Y * 10);
+                PointF leftWing = new PointF(center.X - forward.X * 3 - right.X * 7, center.Y - forward.Y * 3 - right.Y * 7);
+                PointF tail = new PointF(center.X - forward.X * 8, center.Y - forward.Y * 8);
+                PointF rightWing = new PointF(center.X - forward.X * 3 + right.X * 7, center.Y - forward.Y * 3 + right.Y * 7);
+                PointF[] shape = new PointF[] { nose, leftWing, center, tail, center, rightWing };
+                using (Pen halo = new Pen(Color.White, 5))
+                using (Pen pen = new Pen(colour, 3))
+                {
+                    halo.LineJoin = System.Drawing.Drawing2D.LineJoin.Round;
+                    pen.LineJoin = System.Drawing.Drawing2D.LineJoin.Round;
+                    g.DrawLines(halo, shape);
+                    g.DrawLines(pen, shape);
+                }
+                using (SolidBrush b = new SolidBrush(colour)) g.FillEllipse(b, center.X - 3, center.Y - 3, 6, 6);
+                using (Pen p = new Pen(Color.Black)) g.DrawEllipse(p, center.X - 3, center.Y - 3, 6, 6);
+            }
+
             private void DrawStations(Graphics g, Rectangle area)
             {
                 _hits = new List<KstMapHit>();
@@ -3446,6 +4227,293 @@ namespace DXLog.net
         }
     }
 
+
+    internal sealed class AirScoutLivePlane
+    {
+        public string Hex;
+        public string Call;
+        public string Flight;
+        public string Registration;
+        public string Type;
+        public double Lat;
+        public double Lon;
+        public double Track;
+        public int AltitudeFt;
+        public int SpeedKt;
+        public long ReportedUnix;
+
+        public string DisplayName
+        {
+            get
+            {
+                if (!String.IsNullOrWhiteSpace(Call)) return Call.Trim();
+                if (!String.IsNullOrWhiteSpace(Flight)) return Flight.Trim();
+                if (!String.IsNullOrWhiteSpace(Registration)) return Registration.Trim();
+                return Hex ?? "";
+            }
+        }
+    }
+
+    internal sealed class AirScoutPlaneInfo
+    {
+        public string Call;
+        public string Category;
+        public int IntQRB;
+        public int Potential;
+        public int Mins;
+    }
+
+    internal sealed class AirScoutPathResult
+    {
+        public string DxCall = "";
+        public DateTime UpdatedUtc = DateTime.UtcNow;
+        public readonly List<AirScoutPlaneInfo> Planes = new List<AirScoutPlaneInfo>();
+
+        public AirScoutPlaneInfo GetBestPlane()
+        {
+            AirScoutPlaneInfo best = null;
+            foreach (AirScoutPlaneInfo plane in Planes)
+            {
+                if (plane == null || plane.Mins >= 30) continue;
+                if (best == null || plane.Potential > best.Potential ||
+                    (plane.Potential == best.Potential && plane.IntQRB < best.IntQRB))
+                    best = plane;
+            }
+            return best;
+        }
+    }
+
+    internal sealed class AirScoutClient : IDisposable
+    {
+        private readonly int _port;
+        private readonly string _sourceName;
+        private readonly string _serverName;
+        private UdpClient _listener;
+        private CancellationTokenSource _cancel;
+        private Task _receiveTask;
+
+        public bool IsListening { get; private set; }
+        public event Action<AirScoutPathResult> PathResultReceived;
+        public event Action<string> StatusChanged;
+
+        public AirScoutClient(int port, string sourceName, string serverName)
+        {
+            _port = port > 0 && port <= 65535 ? port : 9872;
+            _sourceName = String.IsNullOrWhiteSpace(sourceName) ? "KST" : sourceName.Trim();
+            _serverName = String.IsNullOrWhiteSpace(serverName) ? "AS" : serverName.Trim();
+        }
+
+        public void Start()
+        {
+            if (IsListening) return;
+            try
+            {
+                _cancel = new CancellationTokenSource();
+                _listener = new UdpClient();
+                _listener.ExclusiveAddressUse = false;
+                _listener.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                _listener.Client.Bind(new IPEndPoint(IPAddress.Any, _port));
+                IsListening = true;
+                RaiseStatus("Listening on UDP " + _port.ToString());
+                CancellationToken token = _cancel.Token;
+                _receiveTask = Task.Run(() => ReceiveLoopAsync(token));
+            }
+            catch (Exception ex)
+            {
+                IsListening = false;
+                RaiseStatus("Error: " + ex.Message);
+                DisposeSocketOnly();
+            }
+        }
+
+        public void SendSetPath(string data)
+        {
+            Send("ASSETPATH", data);
+        }
+
+        public void SendShowPath(string data)
+        {
+            Send("ASSHOWPATH", data);
+        }
+
+        private void Send(string command, string data)
+        {
+            if (!IsListening) return;
+            byte[] packet = BuildPacket(command, _sourceName, _serverName, data ?? "");
+            using (UdpClient sender = new UdpClient())
+            {
+                sender.EnableBroadcast = true;
+                sender.Send(packet, packet.Length, new IPEndPoint(IPAddress.Broadcast, _port));
+            }
+        }
+
+        private async Task ReceiveLoopAsync(CancellationToken token)
+        {
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    UdpReceiveResult received = await _listener.ReceiveAsync().ConfigureAwait(false);
+                    if (token.IsCancellationRequested) break;
+                    AirScoutPathResult result;
+                    if (TryParseNearest(received.Buffer, out result))
+                    {
+                        Action<AirScoutPathResult> handler = PathResultReceived;
+                        if (handler != null) handler(result);
+                    }
+                }
+                catch (ObjectDisposedException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    if (!token.IsCancellationRequested) RaiseStatus("Error: " + ex.Message);
+                    break;
+                }
+            }
+            IsListening = false;
+        }
+
+        private static byte[] BuildPacket(string command, string source, string destination, string data)
+        {
+            // AirScout uses the legacy Win-Test UDP framing. For outgoing commands
+            // the wire format is:
+            //   COMMAND: "SRC" "DST" "DATA"?<checksum>
+            // The final '?' is only a placeholder and is replaced by the checksum;
+            // one literal '?' remains immediately before the checksum byte.
+            string text = command + ": \"" + source + "\" \"" + destination + "\" \"" + (data ?? "") + "\"??";
+            byte[] packet = Encoding.ASCII.GetBytes(text);
+            byte sum = 0;
+            for (int i = 0; i < packet.Length - 1; i++) sum += packet[i];
+            packet[packet.Length - 1] = (byte)(sum | 0x80);
+            return packet;
+        }
+
+        private static bool TryParseNearest(byte[] packet, out AirScoutPathResult result)
+        {
+            result = null;
+            if (packet == null || packet.Length < 8) return false;
+
+            int effectiveLength = packet.Length;
+            // Be tolerant of an optional trailing NUL from third-party implementations,
+            // although native AirScout packets end directly with the checksum byte.
+            while (effectiveLength > 0 && packet[effectiveLength - 1] == 0) effectiveLength--;
+            if (effectiveLength < 2) return false;
+            int checksumIndex = effectiveLength - 1;
+            byte sum = 0;
+            for (int i = 0; i < checksumIndex; i++) sum += packet[i];
+            byte expected = (byte)(sum | 0x80);
+            byte actual = (byte)(packet[checksumIndex] | 0x80);
+            if (actual != expected) return false;
+
+            string text = Encoding.ASCII.GetString(packet, 0, checksumIndex).Trim();
+            // Legacy command packets can leave one '?' immediately before the checksum.
+            // ASNEAREST normally does not, but trimming it makes the parser robust.
+            text = text.TrimEnd('?');
+            string command;
+            string source;
+            string destination;
+            string data;
+            if (!TryParseMessageText(text, out command, out source, out destination, out data)) return false;
+            if (!String.Equals(command, "ASNEAREST", StringComparison.OrdinalIgnoreCase)) return false;
+
+            string[] parts = data.Split(',');
+            if (parts.Length < 6) return false;
+            int planeCount;
+            if (!Int32.TryParse(parts[5].Trim(), out planeCount) || planeCount < 0) planeCount = 0;
+
+            AirScoutPathResult parsed = new AirScoutPathResult();
+            parsed.DxCall = parts[3].Trim();
+            parsed.UpdatedUtc = DateTime.UtcNow;
+            int available = Math.Min(planeCount, Math.Max(0, (parts.Length - 6) / 5));
+            for (int i = 0; i < available; i++)
+            {
+                int offset = 6 + (i * 5);
+                int intQrb;
+                int potential;
+                int mins;
+                if (!Int32.TryParse(parts[offset + 2].Trim(), out intQrb)) intQrb = 0;
+                if (!Int32.TryParse(parts[offset + 3].Trim(), out potential)) potential = 0;
+                if (!Int32.TryParse(parts[offset + 4].Trim(), out mins)) mins = 0;
+                parsed.Planes.Add(new AirScoutPlaneInfo
+                {
+                    Call = parts[offset].Trim(),
+                    Category = parts[offset + 1].Trim(),
+                    IntQRB = intQrb,
+                    Potential = potential,
+                    Mins = mins
+                });
+            }
+            result = parsed;
+            return !String.IsNullOrWhiteSpace(parsed.DxCall);
+        }
+
+        private static bool TryParseMessageText(string text, out string command, out string source, out string destination, out string data)
+        {
+            command = "";
+            source = "";
+            destination = "";
+            data = "";
+            if (String.IsNullOrWhiteSpace(text)) return false;
+            int colon = text.IndexOf(':');
+            if (colon <= 0) return false;
+            command = text.Substring(0, colon).Trim();
+            int pos = colon + 1;
+            SkipSpaces(text, ref pos);
+            if (!ReadQuoted(text, ref pos, out source)) return false;
+            SkipSpaces(text, ref pos);
+            if (!ReadQuoted(text, ref pos, out destination)) return false;
+            SkipSpaces(text, ref pos);
+            data = pos < text.Length ? text.Substring(pos).Trim() : "";
+            if (data.Length >= 2 && data[0] == '"' && data[data.Length - 1] == '"')
+                data = data.Substring(1, data.Length - 2);
+            return true;
+        }
+
+        private static void SkipSpaces(string text, ref int pos)
+        {
+            while (pos < text.Length && Char.IsWhiteSpace(text[pos])) pos++;
+        }
+
+        private static bool ReadQuoted(string text, ref int pos, out string value)
+        {
+            value = "";
+            if (pos >= text.Length || text[pos] != '"') return false;
+            int start = ++pos;
+            int end = text.IndexOf('"', start);
+            if (end < 0) return false;
+            value = text.Substring(start, end - start);
+            pos = end + 1;
+            return true;
+        }
+
+        private void RaiseStatus(string status)
+        {
+            Action<string> handler = StatusChanged;
+            if (handler != null) handler(status);
+        }
+
+        private void DisposeSocketOnly()
+        {
+            try { if (_listener != null) _listener.Close(); } catch { }
+            _listener = null;
+        }
+
+        public void Dispose()
+        {
+            try { if (_cancel != null) _cancel.Cancel(); } catch { }
+            DisposeSocketOnly();
+            IsListening = false;
+            if (_cancel != null)
+            {
+                _cancel.Dispose();
+                _cancel = null;
+            }
+            _receiveTask = null;
+        }
+    }
+
     internal sealed class KstUserListComparer : IComparer
     {
         private readonly int _column;
@@ -3469,6 +4537,8 @@ namespace DXLog.net
 
             if (_column == 3 || _column == 4)
                 result = CompareNumericWithBlanksLast(av, bv);
+            else if (_column == 5)
+                result = CompareAirScoutOpportunity(av, bv);
             else
                 result = String.Compare(av, bv, StringComparison.OrdinalIgnoreCase);
 
@@ -3481,6 +4551,22 @@ namespace DXLog.net
         {
             if (item == null || column < 0 || column >= item.SubItems.Count) return "";
             return item.SubItems[column].Text ?? "";
+        }
+
+        private static int CompareAirScoutOpportunity(string a, string b)
+        {
+            return AirScoutSortValue(a).CompareTo(AirScoutSortValue(b));
+        }
+
+        private static int AirScoutSortValue(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value)) return Int32.MaxValue;
+            value = value.Trim();
+            if (String.Equals(value, "NOW", StringComparison.OrdinalIgnoreCase)) return 0;
+            if (value == "-") return Int32.MaxValue - 1;
+            Match m = Regex.Match(value, @"-?\d+");
+            int mins;
+            return m.Success && Int32.TryParse(m.Value, out mins) ? Math.Max(0, mins) : Int32.MaxValue - 2;
         }
 
         private static int CompareNumericWithBlanksLast(string a, string b)
@@ -3865,6 +4951,9 @@ namespace DXLog.net
         public string Password = "";
         public string Name = "";
         public string OwnLocator = "";
+        public bool AirScoutEnabled = false;
+        public int AirScoutPort = 9872;
+        public int AirScoutHttpPort = 9880;
         public string[] Macros = new string[]
         {
             "PSE SKED {FREQ} {MODE}",
@@ -3909,6 +4998,9 @@ namespace DXLog.net
                     else if (key == "password") s.Password = val;
                     else if (key == "name") s.Name = val;
                     else if (key == "locator" || key == "ownlocator" || key == "qthlocator") s.OwnLocator = val;
+                    else if (key == "airscoutenabled") { bool b; if (Boolean.TryParse(val, out b)) s.AirScoutEnabled = b; }
+                    else if (key == "airscoutport" && Int32.TryParse(val, out n) && n > 0 && n <= 65535) s.AirScoutPort = n;
+                    else if (key == "airscouthttpport" && Int32.TryParse(val, out n) && n > 0 && n <= 65535) s.AirScoutHttpPort = n;
                     else if (key == "windowx" && Int32.TryParse(val, out n)) s.WindowX = n;
                     else if (key == "windowy" && Int32.TryParse(val, out n)) s.WindowY = n;
                     else if (key == "windoww" && Int32.TryParse(val, out n)) s.WindowW = n;
@@ -3948,6 +5040,9 @@ namespace DXLog.net
                 lines.Add("password=" + Password);
                 lines.Add("name=" + Name);
                 lines.Add("locator=" + OwnLocator);
+                lines.Add("airscoutenabled=" + AirScoutEnabled.ToString());
+                lines.Add("airscoutport=" + AirScoutPort.ToString());
+                lines.Add("airscouthttpport=" + AirScoutHttpPort.ToString());
                 lines.Add("macro1=" + (Macros != null && Macros.Length > 0 ? Macros[0] : ""));
                 lines.Add("macro2=" + (Macros != null && Macros.Length > 1 ? Macros[1] : ""));
                 lines.Add("macro3=" + (Macros != null && Macros.Length > 2 ? Macros[2] : ""));
@@ -3980,7 +5075,7 @@ namespace DXLog.net
                 colors = new int[ColorValues.Length];
                 Array.Copy(ColorValues, colors, ColorValues.Length);
             }
-            return new KstSettings { Host = Host, Port = Port, Room = Room, Callsign = Callsign, Password = Password, Name = Name, OwnLocator = OwnLocator, Macros = m, WindowX = WindowX, WindowY = WindowY, WindowW = WindowW, WindowH = WindowH, TitleBarColor = TitleBarColor, ColorValues = colors };
+            return new KstSettings { Host = Host, Port = Port, Room = Room, Callsign = Callsign, Password = Password, Name = Name, OwnLocator = OwnLocator, AirScoutEnabled = AirScoutEnabled, AirScoutPort = AirScoutPort, AirScoutHttpPort = AirScoutHttpPort, Macros = m, WindowX = WindowX, WindowY = WindowY, WindowW = WindowW, WindowH = WindowH, TitleBarColor = TitleBarColor, ColorValues = colors };
         }
     }
 
@@ -4049,6 +5144,9 @@ namespace DXLog.net
         private TextBox _pass;
         private TextBox _name;
         private TextBox _locator;
+        private CheckBox _airScoutEnabled;
+        private NumericUpDown _airScoutPort;
+        private NumericUpDown _airScoutHttpPort;
         public KstSettings Settings { get; private set; }
 
         public KstSetupDialog(KstSettings settings)
@@ -4059,18 +5157,18 @@ namespace DXLog.net
             StartPosition = FormStartPosition.CenterParent;
             MinimizeBox = false;
             MaximizeBox = false;
-            ClientSize = new Size(620, 380);
+            ClientSize = new Size(620, 425);
             ShowInTaskbar = false;
 
             TableLayoutPanel p = new TableLayoutPanel();
             p.Dock = DockStyle.Top;
             p.Padding = new Padding(12, 12, 12, 0);
             p.ColumnCount = 2;
-            p.RowCount = 7;
-            p.Height = 286;
+            p.RowCount = 8;
+            p.Height = 326;
             p.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 115));
             p.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            for (int i = 0; i < 7; i++) p.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            for (int i = 0; i < 8; i++) p.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
 
             _host = new TextBox { Text = Settings.Host, Dock = DockStyle.Fill };
             _port = new NumericUpDown { Minimum = 1, Maximum = 65535, Value = Settings.Port, Dock = DockStyle.Left, Width = 100 };
@@ -4081,6 +5179,9 @@ namespace DXLog.net
             _pass = new TextBox { Text = Settings.Password, UseSystemPasswordChar = true, Dock = DockStyle.Fill };
             _name = new TextBox { Text = Settings.Name, Dock = DockStyle.Fill };
             _locator = new TextBox { Text = Settings.OwnLocator, Dock = DockStyle.Left, Width = 120 };
+            _airScoutEnabled = new CheckBox { Text = "Enable AirScout UDP integration", Checked = Settings.AirScoutEnabled, AutoSize = true, Margin = new Padding(0, 8, 18, 0) };
+            _airScoutPort = new NumericUpDown { Minimum = 1, Maximum = 65535, Value = Settings.AirScoutPort > 0 ? Settings.AirScoutPort : 9872, Width = 78, Margin = new Padding(4, 4, 8, 0) };
+            _airScoutHttpPort = new NumericUpDown { Minimum = 1, Maximum = 65535, Value = Settings.AirScoutHttpPort > 0 ? Settings.AirScoutHttpPort : 9880, Width = 78, Margin = new Padding(4, 4, 0, 0) };
 
             AddRow(p, 0, "Host", _host);
             AddRow(p, 1, "Port", _port);
@@ -4092,6 +5193,13 @@ namespace DXLog.net
             AddRow(p, 4, "Password", _pass);
             AddRow(p, 5, "Name", _name);
             AddRow(p, 6, "QTH locator", _locator);
+            FlowLayoutPanel airScoutPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoScroll = false, Height = 40, Padding = new Padding(0), Margin = new Padding(0) };
+            airScoutPanel.Controls.Add(_airScoutEnabled);
+            airScoutPanel.Controls.Add(new Label { Text = "UDP", AutoSize = true, Margin = new Padding(0, 8, 0, 0) });
+            airScoutPanel.Controls.Add(_airScoutPort);
+            airScoutPanel.Controls.Add(new Label { Text = "HTTP", AutoSize = true, Margin = new Padding(0, 8, 0, 0) });
+            airScoutPanel.Controls.Add(_airScoutHttpPort);
+            AddRow(p, 7, "AirScout", airScoutPanel);
 
             Button ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 90, Height = 28 };
             Button cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 90, Height = 28 };
@@ -4119,6 +5227,9 @@ namespace DXLog.net
                 Settings.Password = _pass.Text;
                 Settings.Name = _name.Text.Trim();
                 Settings.OwnLocator = _locator.Text.Trim().ToUpperInvariant();
+                Settings.AirScoutEnabled = _airScoutEnabled.Checked;
+                Settings.AirScoutPort = (int)_airScoutPort.Value;
+                Settings.AirScoutHttpPort = (int)_airScoutHttpPort.Value;
             };
 
             Shown += delegate
