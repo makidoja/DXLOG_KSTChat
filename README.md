@@ -1,143 +1,1202 @@
-﻿# DXLog KST Chat Bridge – AirScout v1.8
+DXLogKSTBridge-DXStyle-QsoRefresh10s(1).zip
+Zip Archive
 
-## v1.8 home-centred map zoom
 
-- Zoom +, Zoom -, and mouse-wheel zoom now always centre the KST map on the operator/home locator.
-- The map can still be dragged for temporary inspection, but the next zoom step returns the centre to home.
-- The Fit button continues to fit all currently listed stations.
-- Retains the compact AS column, selected AirScout path/aircraft overlay, and automatic station scanning.
+Airscout Listening
 
-# DXLog KST Chat Bridge – AirScout v1.7
+Yesterday 5:30 PM
 
-## v1.7 narrower AS column
 
-- Reduces the **AS** station-list column to a fixed compact width suitable for `NOW`, `Xm`, `-`, or blank values.
-- Gives the recovered width to the **Name** column rather than leaving unused space.
-- Retains the v1.6 selected-path and aircraft overlay, automatic AirScout scanning, and all previous fixes.
 
-# DXLog KST Chat Bridge – AirScout v1.6
+Plane Feed Exception: Remote Server unauthorised
 
-## v1.6 KST map path and aircraft overlay
 
-- Clicking a KST callsign now keeps that station as the selected path on the bridge's own map.
-- The map draws a great-circle line from the configured own QTH locator to the selected station locator.
-- The bridge reads AirScout's local aircraft JSON output from `http://127.0.0.1:9880/planes.json`.
-- Aircraft returned by AirScout for the selected path are matched to their live latitude, longitude, heading and altitude and drawn on the KST map.
-- Aircraft labels show the identifier, `NOW` / minutes to opportunity, and altitude in thousands of feet.
-- Aircraft colours distinguish immediate, near-term and later opportunities.
-- A **Show AirScout path and aircraft** checkbox is included on the map.
-- Setup now includes both the AirScout UDP port (default `9872`) and HTTP port (default `9880`).
-- Automatic AS-column scanning continues in the background and cannot overwrite the path displayed on the KST map.
-- v1.5 message-header correction and all previous bridge features are retained.
 
-### AirScout requirement for the map overlay
 
-In AirScout, **Options → Network → Activate Network Server** must be enabled. Keep the UDP server on `9872` and the HTTP server on `9880`, unless matching custom ports are entered in the bridge Setup. AirScout documents its aircraft-position output at `/planes.json`.
 
-# DXLog KST Chat Bridge – AirScout v1.5
+That proves the OpenSky API itself is reachable and returning live aircraft data from your PC. The failure is specifically inside AirScout’s older .NET HTTPS client.
 
-## v1.5 display correction
+One important detail: you are testing in Firefox, which can use its own certificate handling, so this does not completely prove that Windows/.NET trusts the same certificate chain. But it does prove OpenSky is up and accessible.
 
-- Removes the large white blocks at the right of the two message-list headers.
-- These blocks were unused owner-drawn header space, not functional scroll bars.
-- The Message column now fills the available width while retaining a two-pixel border margin.
-- AirScout v1.4 automatic station scanning and all existing bridge features are unchanged.
+I would now apply the .NET TLS fix. Microsoft recommends enabling strong cryptography and system-default TLS handling for older .NET Framework applications so they can negotiate modern TLS correctly.
 
-# DXLog KST Chat Bridge - AirScout build
+Open Command Prompt as Administrator and run:
 
-This build keeps the existing DXLog/KST bridge features and adds first-pass AirScout integration.
+reg add "HKLM\SOFTWARE\Microsoft\.NETFramework\v4.0.30319" /v SchUseStrongCrypto /t REG_DWORD /d 1 /f
+reg add "HKLM\SOFTWARE\Microsoft\.NETFramework\v4.0.30319" /v SystemDefaultTlsVersions /t REG_DWORD /d 1 /f
 
-## Existing features retained
+reg add "HKLM\SOFTWARE\WOW6432Node\Microsoft\.NETFramework\v4.0.30319" /v SchUseStrongCrypto /t REG_DWORD /d 1 /f
+reg add "HKLM\SOFTWARE\WOW6432Node\Microsoft\.NETFramework\v4.0.30319" /v SystemDefaultTlsVersions /t REG_DWORD /d 1 /f
 
-- DXLog-style KST station and message lists.
-- CQ button and directed **To call** messaging.
-- M1-M4 directed macros.
-- 10 second ON4KST `/SH US` station refresh.
-- Immediate KST/worked-status refresh after a QSO is logged in DXLog.
-- Station map and selected-station conversation pane.
-- PSTRotator control, including the existing Ctrl+F12 action.
-- Window position, size and colour persistence.
+Then reboot Windows, reopen AirScout and try the OpenSky feed again.
 
-## AirScout integration
+The WOW6432Node entries are particularly relevant because your AirScout build may be a 32-bit .NET application.
 
-The bridge talks directly to AirScout using the established Win-Test-style UDP protocol.
+Also, leave the OpenSky username/password blank for this test. OpenSky currently supports anonymous requests to the live states API, while authenticated access now uses OAuth2 client credentials rather than the old username/password method.
 
-- Default UDP port: **9872**.
-- Protocol source/destination names: **KST** -> **AS**.
-- A new **AS** column is shown in the KST station list.
-- Selecting a KST station sends its current path to AirScout.
-- Changing the focused DXLog radio/frequency refreshes the selected AirScout path.
-- The selected path is refreshed every 15 seconds.
-- AirScout `ASNEAREST` replies are shown as:
-  - `NOW` - a reported aircraft opportunity is current/immediate.
-  - `Xm` - best reported opportunity in X minutes.
-  - `-` - AirScout replied but reported no suitable aircraft within the display window.
-- Hovering a station row shows the best aircraft details: aircraft identifier, category, opportunity time, potential and intersection QRB.
-- Right-click a station and choose **Show path in AirScout** to send `ASSHOWPATH` as well as the normal path update.
-- The bottom-right status shows **AirScout: Off**, **Listening**, **OK** or **Error**.
+If AirScout still gives the same SSL/TLS trust error after the reboot, the next step should be to test the URL through Windows/.NET rather than Firefox, for example from PowerShell:
 
-The displayed aircraft is selected by highest AirScout potential, then the shortest intersection QRB, matching the established client behaviour. Opportunities more than 30 minutes away are not shown in the compact AS column.
+Invoke-WebRequest "https://opensky-network.org/api/states/all" -UseBasicParsing
 
-## Setup
+If PowerShell succeeds but AirScout still fails, then we know the problem is inside the old AirScout OpenSky plugin itself, and the cleanest solution will be to update/replace that plugin or put a small local HTTP proxy between AirScout and OpenSky.
 
-1. Start AirScout and make sure its compatible UDP/Win-Test network interface is enabled on the machine/network.
-2. Open **Setup** in the DXLog KST Chat Bridge.
-3. Enter a valid **User / call** and **QTH locator**.
-4. Tick **Enable AirScout UDP integration**.
-5. Leave the UDP port at **9872** unless your AirScout configuration uses a different port.
-6. Click **OK**.
-7. Select a KST station that has a valid locator while DXLog has a valid focused radio frequency.
+That works, however there are big white squares on the right of the message panels ? why is this?
 
-The status should initially show **AirScout: Listening** and change to **AirScout: OK** when a valid `ASNEAREST` reply is received.
+can we also make the AS column narrower as it doesn;t need to be that wide
 
-## Build
+how oftn doe the aircraft position update on the map?
 
-Build as an **x86 .NET Framework 4.8 class library** with the normal DXLog references available:
+In v1.7, the KST map checks AirScout’s /planes.json feed every 5 seconds while the map window is open and Show AirScout path and aircraft is enabled.
 
-- `C:\Program Files (x86)\DXLog.net\DXLog.net.exe`
-- `C:\Program Files (x86)\DXLog.net\DXLogDAL.dll`
+However, your OpenSky feed is configured with:
 
-Copy the resulting DLL from either:
+Cycle: 90 seconds
 
-- `bin\x86\Debug\DXLogKstBridge.dll`
-- `bin\x86\Release\DXLogKstBridge.dll`
+So in practice:
 
-to:
+    KST map polls AirScout: every 5 seconds
 
-`%appdata%\DXLog.net\CustomForms`
+    AirScout receives new OpenSky positions: about every 90 seconds
 
-Restart DXLog or reload the custom form after replacing the DLL.
+    Aircraft may therefore remain stationary and then jump to their next reported position every 90 seconds.
 
-## Notes
+The bridge currently does not estimate movement between reports. A better approach would be to move each aircraft smoothly using its last position, speed and heading, while still correcting it whenever AirScout supplies a new position.
 
-- AirScout is disabled by default so existing users are unaffected until it is enabled in Setup.
-- The AS column needs both stations' valid Maidenhead locators and a valid current DXLog radio frequency.
-- This implementation independently implements the AirScout-compatible UDP message framing and does not require AirScout DLL references.
+Zoom in and out on the map should always center on the home station
 
-## v1.2 protocol fix
+Done. Map zoom is now always anchored on your home locator.
 
-Corrected the AirScout legacy Win-Test UDP wire framing used by `ASSETPATH`, `ASSHOWPATH`, and `ASNEAREST`:
+    Zoom +, Zoom −, and mouse-wheel zoom recentre on the home station before changing scale.
 
-- data is now quoted on the wire;
-- outgoing commands use the AirScout/Win-Test `?` + checksum convention;
-- incoming replies treat the final byte as the checksum and tolerate an optional trailing NUL.
+    You can still drag the map temporarily.
 
-This fixes v1.1 remaining at `AirScout: Listening` even when the AirScout Network Server was enabled on UDP 9872.
+    The next zoom action returns the centre to home.
 
-## AirScout v1.3 diagnostic/frequency fix
-- Maps the live DXLog VFO to AirScout's canonical band frequencies (e.g. any 140-150 MHz VFO value is sent as 1440000 in 100 Hz units), matching the established wtKST integration.
-- The AirScout status now changes from `Listening` to `Waiting <CALL>` as soon as a valid ASSETPATH query is transmitted.
-- The bridge status line reports the exact call, locator and AirScout QRG sent for easier diagnosis.
+    Fit still displays all listed stations.
 
-## AirScout v1.4 automatic station scan
+Build as Release | x86 and replace the v1.7 DLL.
 
-The AS column is now populated automatically for the full current KST station list.
+Today 5:57 AM
+please write the readme instructions for this
 
-- The bridge builds a queue of all listed KST stations that have valid locators.
-- It sends one `ASSETPATH` query at a time and waits for that station's `ASNEAREST` reply before moving on.
-- A two-second per-path timeout prevents one bad path from stalling the scan.
-- The complete list is rescanned after a 20-second pause, so aircraft opportunities stay current without flooding AirScout.
-- The AirScout status can show scan progress such as `AirScout: OK 12/34`.
-- Changing the DXLog band clears the old band-specific AS results and starts a fresh full scan automatically.
-- The **AS** column can now be clicked to sort opportunities with `NOW` first, then `1m`, `2m`, etc.; `-` and blank entries sort last.
-- Selecting a station still performs an immediate query, and **Show path in AirScout** remains available on the station right-click menu.
+I’ve replaced the short changelog with a complete user README covering:
+
+    Visual Studio Release | x86 build instructions
+
+    Installing the DLL into DXLog
+
+    ON4KST account, room and locator setup
+
+    AirScout UDP/HTTP Network Server configuration
+
+    The tested OpenSky :443 URL workaround
+
+    Automatic AS-column scanning and sorting
+
+    KST map, live aircraft, zoom and path controls
+
+    DXLog callsign/locator insertion
+
+    CQ, directed messages and macros
+
+    PSTRotator/DXLog Ctrl+F12 operation
+
+    Refresh intervals
+
+    Settings-file locations
+
+    Detailed troubleshooting
+
+
+Library
+/DXLogKSTBridge-AirScout-v1.8-README.md
+
+# DXLog KST Chat Bridge with AirScout
+
+**Version 1.8 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
+
+This custom form combines the ON4KST chat service with DXLog.net. It displays the current KST station list and chat messages, inserts selected callsigns and locators into DXLog, sends directed messages and macros, calculates QRB/QTF, controls the DXLog rotator command, and uses AirScout to show aircraft-scatter opportunities automatically.
+
+The bridge is supplied as source code and builds as an **x86 .NET Framework 4.8 class library**.
+
+---
+
+## Main features
+
+- ON4KST classic telnet connection and room selection.
+- Station list with callsign, name, locator, QTF, QRB and AirScout opportunity.
+- General CQ and directed KST messaging.
+- Four editable message macros using live DXLog frequency, band and mode.
+- Double-click a station to enter its callsign and locator into DXLog.
+- Automatic refresh of the KST station list every 10 seconds.
+- Immediate worked-status and station-list refresh after a QSO is logged.
+- Selected-station conversation panel.
+- OpenStreetMap station map with pan, zoom and station selection.
+- Optional DXLog rotator command when a station is selected on the map.
+- Automatic AirScout scan of every KST station with a valid locator.
+- Sortable **AS** column showing `NOW`, `Xm`, `-`, or blank.
+- Selected AirScout path and matched aircraft drawn on the KST map.
+- Window position, size, colours and macros saved between sessions.
+
+---
+
+## Requirements
+
+### For normal use
+
+- Windows 10 or Windows 11.
+- DXLog.net installed in its standard 32-bit program folder.
+- A valid ON4KST account and password.
+- Internet access for ON4KST and OpenStreetMap tiles.
+
+### For AirScout features
+
+- AirScout running on the same PC.
+- A working aircraft feed configured in AirScout.
+- AirScout Network Server enabled on UDP port `9872` and HTTP port `9880`.
+
+### For building the DLL
+
+- Visual Studio 2022.
+- .NET Framework 4.8 Developer Pack.
+- DXLog.net installed so the project can reference:
+
+```text
+C:\Program Files (x86)\DXLog.net\DXLog.net.exe
+C:\Program Files (x86)\DXLog.net\DXLogDAL.dll
+```
+
+---
+
+# 1. Build the bridge
+
+1. Extract the ZIP file to a normal writable folder.
+2. Open `DXLogKstBridge.csproj` in Visual Studio 2022.
+3. Select **Release** and **x86** in the Visual Studio toolbar.
+4. Check that both DXLog references load without warning:
+   - `DXLog.net`
+   - `DXLogDAL`
+5. Select **Build → Build Solution**.
+
+The DLL will be created at:
+
+```text
+bin\x86\Release\DXLogKstBridge.dll
+```
+
+For a diagnostic build, use **Debug | x86**. Its output is:
+
+```text
+bin\x86\Debug\DXLogKstBridge.dll
+```
+
+## Reference errors
+
+If Visual Studio cannot find the DXLog assemblies, remove and re-add the two references from the actual DXLog installation folder. The project must remain an **x86** build because DXLog.net is a 32-bit application.
+
+---
+
+# 2. Install the bridge in DXLog
+
+1. Close DXLog.net completely.
+2. Create the following folder if it does not already exist:
+
+```text
+%APPDATA%\DXLog.net\CustomForms
+```
+
+3. Copy `DXLogKstBridge.dll` into that folder.
+4. Start DXLog.net.
+5. Open the custom form from the DXLog **Custom** menu using **KST Chat Bridge**.
+
+When updating an existing version, close DXLog before replacing the DLL. Keeping a copy of the previous working DLL is recommended.
+
+---
+
+# 3. Configure ON4KST
+
+Open the bridge and click **Setup**.
+
+Use these normal values:
+
+```text
+Host:       www.on4kst.info
+Port:       23000
+Room:       2              (144/432 MHz)
+User/call:  your callsign
+Password:   your ON4KST password
+Name:       your name
+QTH locator: your Maidenhead locator
+```
+
+The QTH locator is important. It is used for:
+
+- QRB and QTF calculations.
+- AirScout path calculations.
+- Home-station position on the KST map.
+- Home-centred map zoom.
+- Rotator bearing calculations.
+
+Click **OK**, then click **Connect**.
+
+The room can also be changed later with the **Room** button. If connected, the bridge reconnects automatically using the new room.
+
+## KST room numbers
+
+```text
+1   50 MHz
+2   144/432 MHz
+3   1296 MHz
+4   2.3/3.4 GHz
+5   5.7/10 GHz
+6   24 GHz and up
+7   EME
+8   MS
+9   144/432 MHz IARU R3
+10  2000–630 m
+11  WARC 30/17/12 m
+12  28 MHz
+13  40 MHz
+```
+
+---
+
+# 4. Configure an aircraft feed in AirScout
+
+AirScout must show live aircraft on its own map before the bridge can produce useful AS results.
+
+## Tested OpenSky configuration
+
+In AirScout open:
+
+**Options → Planes**
+
+Choose:
+
+```text
+[WebFeed] OpenSky
+```
+
+Open **Settings** and set the URL to:
+
+```text
+https://opensky-network.org:443/api/states/all
+```
+
+A cycle of around `90` seconds is suitable for initial use.
+
+For anonymous testing, leave these fields blank:
+
+```text
+OAuthClientID
+OAuthSecret
+```
+
+The explicit `:443` is important with affected AirScout 1.4.x OpenSky plugins. Without it, the plugin may rewrite the working hostname to `api.opensky-network.org`, which can produce:
+
+```text
+Could not establish trust relationship for the SSL/TLS secure channel
+```
+
+After restarting AirScout, reopen the OpenSky settings and confirm that the URL still contains `:443`.
+
+## Other aircraft feeds
+
+The bridge does not depend directly on OpenSky. Any AirScout-compatible feed is suitable, including a local receiver, Virtual Radar Server, RTL1090 or another supported web feed. AirScout only needs to have current aircraft positions available internally.
+
+---
+
+# 5. Enable the AirScout Network Server
+
+In AirScout open:
+
+**Options → Network**
+
+Enable:
+
+```text
+Activate Network Server
+```
+
+Use:
+
+```text
+AirScout UDP Server Name: AS
+AirScout UDP Server Port: 9872
+AirScout HTTP Server Port: 9880
+```
+
+Allow AirScout through Windows Firewall when prompted. Private-network access is sufficient when AirScout and DXLog are on the same PC.
+
+The two interfaces have different jobs:
+
+- **UDP 9872** — path queries and `ASNEAREST` opportunity replies.
+- **HTTP 9880** — live aircraft positions from `/planes.json` for the KST map overlay.
+
+---
+
+# 6. Enable AirScout in the KST bridge
+
+Open **Setup** in the KST Chat Bridge and enable:
+
+```text
+Enable AirScout UDP integration
+UDP:  9872
+HTTP: 9880
+```
+
+The bridge status at the bottom-right can show:
+
+- **AirScout: Off** — disabled in bridge Setup.
+- **AirScout: Listening** — UDP listener is active, but no valid query/reply has completed yet.
+- **AirScout: Waiting CALL** — a query has been sent and the bridge is waiting for AirScout.
+- **AirScout: OK** — valid replies are being received.
+- **AirScout: OK n/total** — automatic station scan is in progress.
+- **AirScout: Error** — the UDP listener or AirScout setup failed.
+
+A valid own callsign, own locator, KST station locator and DXLog radio frequency are all required for a path query.
+
+---
+
+# 7. Understanding the station list
+
+The station list contains:
+
+```text
+Call | Name | Loc | QTF | QRB | AS
+```
+
+The **AS** values mean:
+
+- `NOW` — AirScout reports an immediate/current opportunity.
+- `5m` — the best reported opportunity is approximately five minutes away.
+- `-` — AirScout replied, but no suitable aircraft was reported within the display window.
+- blank — that station has not yet been queried, lacks a valid locator, or AirScout is unavailable.
+
+Click the **AS** column header to sort the list with `NOW` first, followed by the lowest minute values. This makes it easy to choose a station whose aircraft-scatter opportunity is approaching.
+
+Hover over a station row to see additional AirScout information, including:
+
+- Aircraft identifier.
+- Aircraft category.
+- Minutes to opportunity.
+- AirScout potential.
+- Intersection QRB.
+
+## Automatic scanning
+
+The bridge automatically scans every current KST station that has a valid locator.
+
+- One path is queried at a time.
+- A path is skipped after a two-second timeout if no reply arrives.
+- After a complete scan, the bridge waits 20 seconds and starts again.
+- Changing the active DXLog band clears the old AS results and starts a new band-specific scan.
+- The KST station list itself refreshes every 10 seconds.
+
+With a large room, the first full pass takes longer because every valid station has to be queried.
+
+---
+
+# 8. Selecting stations and using DXLog
+
+### Single-click a station
+
+- Selects that callsign.
+- Displays messages to/from that station in the lower message panel.
+- Performs an immediate AirScout query for the selected path.
+- Updates the selected path shown on the KST map.
+
+### Double-click a station
+
+- Inserts the callsign into the current DXLog entry line.
+- Supplies the KST locator when DXLog does not already have a locator.
+
+DXLog database information takes priority over KST locator information where available.
+
+### Right-click a station
+
+The context menu provides:
+
+- Put the callsign into DXLog.
+- Message the station.
+- Copy the callsign.
+- Send a custom message.
+- **Show path in AirScout**.
+
+Use **Show path in AirScout** when you specifically want AirScout’s own window to display that path.
+
+---
+
+# 9. Messages, CQ and macros
+
+## CQ
+
+Click **CQ** to send a general room message. This clears the directed-station selection for messaging.
+
+## To call
+
+Click **To call** to compose a directed message to the selected callsign.
+
+## Macros
+
+Click **Edit macros** to configure M1–M4. The default macros are:
+
+```text
+M1  PSE SKED {FREQ} {MODE}
+M2  QRV {FREQ} {MODE}?
+M3  I CALL YOU {FREQ} {MODE}
+M4  TU 73
+```
+
+Supported replacements are:
+
+```text
+{CALL}      selected station callsign
+{MYCALL}    your configured callsign
+{FREQ}      DXLog frequency in plain kHz, for example 144750
+{FREQMHZ}   frequency in MHz, for example 144.75MHz
+{BAND}      active DXLog band
+{MODE}      active DXLog mode
+```
+
+Macros are directed to the currently selected station.
+
+---
+
+# 10. KST map and aircraft overlay
+
+Click **Map** in the bridge.
+
+The map displays:
+
+- Your configured home station.
+- Current KST users with valid locators.
+- The selected station.
+- The great-circle path from home to the selected station.
+- AirScout aircraft matched to the selected path.
+
+## Map controls
+
+- **Refresh** — immediately reload stations and current aircraft data.
+- **Zoom +** — zoom in, centred on the home station.
+- **Zoom -** — zoom out, centred on the home station.
+- **Mouse wheel** — zoom in/out, centred on the home station.
+- **Fit** — fit the home station and all listed stations into view.
+- **Drag map** — temporarily pan the map. The next zoom action recentres on home.
+- **Turn rotator on click** — selecting a map station also triggers DXLog’s rotator command.
+- **Show AirScout path and aircraft** — enables or hides the selected path/aircraft overlay.
+
+The map checks AirScout’s local `/planes.json` output every **5 seconds**. Actual aircraft movement is limited by the update interval of the aircraft feed configured in AirScout. For example, a 90-second OpenSky cycle will cause aircraft positions to update in larger steps even though the bridge checks every five seconds.
+
+OpenStreetMap tiles are cached at:
+
+```text
+%APPDATA%\DXLog.net\KstMapTiles
+```
+
+---
+
+# 11. Rotator control
+
+The bridge uses DXLog’s existing short-path rotator command, equivalent to **Ctrl+F12**.
+
+Before using it:
+
+1. Configure the rotator normally in DXLog.
+2. Confirm that Ctrl+F12 turns the antenna to the callsign in the current entry line.
+3. Open the KST map.
+4. Leave **Turn rotator on click** enabled.
+5. Click a station on the map.
+
+The bridge first puts the callsign/locator into DXLog, then triggers the DXLog rotator command after a short delay.
+
+If the rotator does not move, test Ctrl+F12 directly in DXLog before troubleshooting the bridge.
+
+---
+
+# 12. Refresh intervals
+
+```text
+KST station list:                 every 10 seconds
+AirScout full AS rescan pause:    20 seconds after a completed pass
+AirScout per-path timeout:        2 seconds
+KST map refresh:                  every 5 seconds
+AirScout /planes.json check:      at most every 5 seconds
+Selected path query:              immediate when selected
+QSO logged refresh:               immediate/short delayed refresh
+```
+
+The aircraft feed’s own cycle remains the limiting factor for new aircraft positions.
+
+---
+
+# 13. Saved settings
+
+The bridge stores its configuration at:
+
+```text
+%APPDATA%\DXLog.net\KstChatBridgeTelnet.ini
+```
+
+This includes:
+
+- ON4KST host, port, room, callsign and password.
+- Name and home locator.
+- AirScout enable state and ports.
+- Macros.
+- Window position and size.
+- Display colours and title-bar colour.
+
+**Security note:** the ON4KST password is stored in this local INI file. Do not share the file, and protect access to the Windows account.
+
+To reset all bridge settings, close DXLog and rename or delete `KstChatBridgeTelnet.ini`.
+
+---
+
+# 14. Troubleshooting
+
+## The bridge does not appear in DXLog
+
+- Confirm the DLL is in `%APPDATA%\DXLog.net\CustomForms`.
+- Confirm the project was built as **x86** and targets **.NET Framework 4.8**.
+- Close and restart DXLog after replacing the DLL.
+
+## KST does not connect
+
+- Check the ON4KST callsign and password.
+- Confirm host `www.on4kst.info` and port `23000`.
+- Check Windows Firewall and internet access.
+- Try a different KST room only after normal login is confirmed.
+
+## QTF and QRB are blank or incorrect
+
+- Enter a valid own Maidenhead locator in bridge Setup.
+- Confirm the remote KST station has a valid locator.
+
+## AirScout remains Off
+
+Enable **AirScout UDP integration** in bridge Setup.
+
+## AirScout remains Listening
+
+- Select a station with a valid locator.
+- Confirm DXLog has a valid active radio frequency.
+- Confirm AirScout Network Server is enabled.
+- Confirm UDP port `9872` matches in both programs.
+
+## AirScout shows Waiting but never OK
+
+- Check AirScout UDP Server Name is `AS`.
+- Check UDP port `9872`.
+- Allow AirScout and DXLog through Windows Firewall.
+- Confirm AirScout itself can calculate the selected path.
+
+## AS cells contain only `-`
+
+Communication is working, but AirScout is not reporting a suitable aircraft for those paths. Confirm live aircraft are visible in AirScout and that the correct band is active in DXLog.
+
+## Aircraft do not appear on the KST map
+
+- Select a station whose AS result has an aircraft.
+- Enable **Show AirScout path and aircraft**.
+- Confirm AirScout HTTP server port is `9880`.
+- Confirm `http://127.0.0.1:9880/planes.json` is available locally.
+- Confirm AirScout has a working live aircraft feed.
+
+## OpenSky gives an SSL/TLS trust error
+
+Use this exact AirScout OpenSky URL:
+
+```text
+https://opensky-network.org:443/api/states/all
+```
+
+The explicit `:443` prevents affected plugin versions from changing it to the failing `api.opensky-network.org` hostname. Check the setting again after restarting AirScout.
+
+## Map is blank
+
+- Check internet access for OpenStreetMap tiles.
+- Click **Refresh** or **Fit**.
+- Check the tile-cache folder is writable.
+- Temporarily remove old cached tiles from `%APPDATA%\DXLog.net\KstMapTiles` if required.
+
+## Rotator does not turn
+
+- Confirm the rotator works from DXLog itself.
+- Confirm Ctrl+F12 works with the active entry line.
+- Confirm the selected station has a valid locator.
+- Confirm **Turn rotator on click** is enabled.
+
+---
+
+# 15. Version 1.8 notes
+
+Version 1.8 includes:
+
+- Automatic full-room AirScout scanning.
+- Compact sortable AS column.
+- Selected path and aircraft overlay on the KST map.
+- AirScout UDP and HTTP port settings.
+- Five-second aircraft-map refresh.
+- Message-header white-block correction.
+- Home-centred button and mouse-wheel zoom.
+- Map dragging with the next zoom returning to the home station.
+- Ten-second KST station refresh and QSO-triggered refresh.
+- Existing CQ, directed messaging, macros, map and rotator functions.
+
+---
+
+## Files in this source package
+
+```text
+DXLogKstBridge.cs       complete bridge source code
+DXLogKstBridge.csproj   Visual Studio/.NET Framework project
+README.md               this guide
+```
+
+Library
+/DXLogKSTBridge-AirScout-v1.8-README.md
+
+# DXLog KST Chat Bridge with AirScout
+
+**Version 1.8 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
+
+This custom form combines the ON4KST chat service with DXLog.net. It displays the current KST station list and chat messages, inserts selected callsigns and locators into DXLog, sends directed messages and macros, calculates QRB/QTF, controls the DXLog rotator command, and uses AirScout to show aircraft-scatter opportunities automatically.
+
+The bridge is supplied as source code and builds as an **x86 .NET Framework 4.8 class library**.
+
+---
+
+## Main features
+
+- ON4KST classic telnet connection and room selection.
+- Station list with callsign, name, locator, QTF, QRB and AirScout opportunity.
+- General CQ and directed KST messaging.
+- Four editable message macros using live DXLog frequency, band and mode.
+- Double-click a station to enter its callsign and locator into DXLog.
+- Automatic refresh of the KST station list every 10 seconds.
+- Immediate worked-status and station-list refresh after a QSO is logged.
+- Selected-station conversation panel.
+- OpenStreetMap station map with pan, zoom and station selection.
+- Optional DXLog rotator command when a station is selected on the map.
+- Automatic AirScout scan of every KST station with a valid locator.
+- Sortable **AS** column showing `NOW`, `Xm`, `-`, or blank.
+- Selected AirScout path and matched aircraft drawn on the KST map.
+- Window position, size, colours and macros saved between sessions.
+
+---
+
+## Requirements
+
+### For normal use
+
+- Windows 10 or Windows 11.
+- DXLog.net installed in its standard 32-bit program folder.
+- A valid ON4KST account and password.
+- Internet access for ON4KST and OpenStreetMap tiles.
+
+### For AirScout features
+
+- AirScout running on the same PC.
+- A working aircraft feed configured in AirScout.
+- AirScout Network Server enabled on UDP port `9872` and HTTP port `9880`.
+
+### For building the DLL
+
+- Visual Studio 2022.
+- .NET Framework 4.8 Developer Pack.
+- DXLog.net installed so the project can reference:
+
+```text
+C:\Program Files (x86)\DXLog.net\DXLog.net.exe
+C:\Program Files (x86)\DXLog.net\DXLogDAL.dll
+```
+
+---
+
+# 1. Build the bridge
+
+1. Extract the ZIP file to a normal writable folder.
+2. Open `DXLogKstBridge.csproj` in Visual Studio 2022.
+3. Select **Release** and **x86** in the Visual Studio toolbar.
+4. Check that both DXLog references load without warning:
+   - `DXLog.net`
+   - `DXLogDAL`
+5. Select **Build → Build Solution**.
+
+The DLL will be created at:
+
+```text
+bin\x86\Release\DXLogKstBridge.dll
+```
+
+For a diagnostic build, use **Debug | x86**. Its output is:
+
+```text
+bin\x86\Debug\DXLogKstBridge.dll
+```
+
+## Reference errors
+
+If Visual Studio cannot find the DXLog assemblies, remove and re-add the two references from the actual DXLog installation folder. The project must remain an **x86** build because DXLog.net is a 32-bit application.
+
+---
+
+# 2. Install the bridge in DXLog
+
+1. Close DXLog.net completely.
+2. Create the following folder if it does not already exist:
+
+```text
+%APPDATA%\DXLog.net\CustomForms
+```
+
+3. Copy `DXLogKstBridge.dll` into that folder.
+4. Start DXLog.net.
+5. Open the custom form from the DXLog **Custom** menu using **KST Chat Bridge**.
+
+When updating an existing version, close DXLog before replacing the DLL. Keeping a copy of the previous working DLL is recommended.
+
+---
+
+# 3. Configure ON4KST
+
+Open the bridge and click **Setup**.
+
+Use these normal values:
+
+```text
+Host:       www.on4kst.info
+Port:       23000
+Room:       2              (144/432 MHz)
+User/call:  your callsign
+Password:   your ON4KST password
+Name:       your name
+QTH locator: your Maidenhead locator
+```
+
+The QTH locator is important. It is used for:
+
+- QRB and QTF calculations.
+- AirScout path calculations.
+- Home-station position on the KST map.
+- Home-centred map zoom.
+- Rotator bearing calculations.
+
+Click **OK**, then click **Connect**.
+
+The room can also be changed later with the **Room** button. If connected, the bridge reconnects automatically using the new room.
+
+## KST room numbers
+
+```text
+1   50 MHz
+2   144/432 MHz
+3   1296 MHz
+4   2.3/3.4 GHz
+5   5.7/10 GHz
+6   24 GHz and up
+7   EME
+8   MS
+9   144/432 MHz IARU R3
+10  2000–630 m
+11  WARC 30/17/12 m
+12  28 MHz
+13  40 MHz
+```
+
+---
+
+# 4. Configure an aircraft feed in AirScout
+
+AirScout must show live aircraft on its own map before the bridge can produce useful AS results.
+
+## Tested OpenSky configuration
+
+In AirScout open:
+
+**Options → Planes**
+
+Choose:
+
+```text
+[WebFeed] OpenSky
+```
+
+Open **Settings** and set the URL to:
+
+```text
+https://opensky-network.org:443/api/states/all
+```
+
+A cycle of around `90` seconds is suitable for initial use.
+
+For anonymous testing, leave these fields blank:
+
+```text
+OAuthClientID
+OAuthSecret
+```
+
+The explicit `:443` is important with affected AirScout 1.4.x OpenSky plugins. Without it, the plugin may rewrite the working hostname to `api.opensky-network.org`, which can produce:
+
+```text
+Could not establish trust relationship for the SSL/TLS secure channel
+```
+
+After restarting AirScout, reopen the OpenSky settings and confirm that the URL still contains `:443`.
+
+## Other aircraft feeds
+
+The bridge does not depend directly on OpenSky. Any AirScout-compatible feed is suitable, including a local receiver, Virtual Radar Server, RTL1090 or another supported web feed. AirScout only needs to have current aircraft positions available internally.
+
+---
+
+# 5. Enable the AirScout Network Server
+
+In AirScout open:
+
+**Options → Network**
+
+Enable:
+
+```text
+Activate Network Server
+```
+
+Use:
+
+```text
+AirScout UDP Server Name: AS
+AirScout UDP Server Port: 9872
+AirScout HTTP Server Port: 9880
+```
+
+Allow AirScout through Windows Firewall when prompted. Private-network access is sufficient when AirScout and DXLog are on the same PC.
+
+The two interfaces have different jobs:
+
+- **UDP 9872** — path queries and `ASNEAREST` opportunity replies.
+- **HTTP 9880** — live aircraft positions from `/planes.json` for the KST map overlay.
+
+---
+
+# 6. Enable AirScout in the KST bridge
+
+Open **Setup** in the KST Chat Bridge and enable:
+
+```text
+Enable AirScout UDP integration
+UDP:  9872
+HTTP: 9880
+```
+
+The bridge status at the bottom-right can show:
+
+- **AirScout: Off** — disabled in bridge Setup.
+- **AirScout: Listening** — UDP listener is active, but no valid query/reply has completed yet.
+- **AirScout: Waiting CALL** — a query has been sent and the bridge is waiting for AirScout.
+- **AirScout: OK** — valid replies are being received.
+- **AirScout: OK n/total** — automatic station scan is in progress.
+- **AirScout: Error** — the UDP listener or AirScout setup failed.
+
+A valid own callsign, own locator, KST station locator and DXLog radio frequency are all required for a path query.
+
+---
+
+# 7. Understanding the station list
+
+The station list contains:
+
+```text
+Call | Name | Loc | QTF | QRB | AS
+```
+
+The **AS** values mean:
+
+- `NOW` — AirScout reports an immediate/current opportunity.
+- `5m` — the best reported opportunity is approximately five minutes away.
+- `-` — AirScout replied, but no suitable aircraft was reported within the display window.
+- blank — that station has not yet been queried, lacks a valid locator, or AirScout is unavailable.
+
+Click the **AS** column header to sort the list with `NOW` first, followed by the lowest minute values. This makes it easy to choose a station whose aircraft-scatter opportunity is approaching.
+
+Hover over a station row to see additional AirScout information, including:
+
+- Aircraft identifier.
+- Aircraft category.
+- Minutes to opportunity.
+- AirScout potential.
+- Intersection QRB.
+
+## Automatic scanning
+
+The bridge automatically scans every current KST station that has a valid locator.
+
+- One path is queried at a time.
+- A path is skipped after a two-second timeout if no reply arrives.
+- After a complete scan, the bridge waits 20 seconds and starts again.
+- Changing the active DXLog band clears the old AS results and starts a new band-specific scan.
+- The KST station list itself refreshes every 10 seconds.
+
+With a large room, the first full pass takes longer because every valid station has to be queried.
+
+---
+
+# 8. Selecting stations and using DXLog
+
+### Single-click a station
+
+- Selects that callsign.
+- Displays messages to/from that station in the lower message panel.
+- Performs an immediate AirScout query for the selected path.
+- Updates the selected path shown on the KST map.
+
+### Double-click a station
+
+- Inserts the callsign into the current DXLog entry line.
+- Supplies the KST locator when DXLog does not already have a locator.
+
+DXLog database information takes priority over KST locator information where available.
+
+### Right-click a station
+
+The context menu provides:
+
+- Put the callsign into DXLog.
+- Message the station.
+- Copy the callsign.
+- Send a custom message.
+- **Show path in AirScout**.
+
+Use **Show path in AirScout** when you specifically want AirScout’s own window to display that path.
+
+---
+
+# 9. Messages, CQ and macros
+
+## CQ
+
+Click **CQ** to send a general room message. This clears the directed-station selection for messaging.
+
+## To call
+
+Click **To call** to compose a directed message to the selected callsign.
+
+## Macros
+
+Click **Edit macros** to configure M1–M4. The default macros are:
+
+```text
+M1  PSE SKED {FREQ} {MODE}
+M2  QRV {FREQ} {MODE}?
+M3  I CALL YOU {FREQ} {MODE}
+M4  TU 73
+```
+
+Supported replacements are:
+
+```text
+{CALL}      selected station callsign
+{MYCALL}    your configured callsign
+{FREQ}      DXLog frequency in plain kHz, for example 144750
+{FREQMHZ}   frequency in MHz, for example 144.75MHz
+{BAND}      active DXLog band
+{MODE}      active DXLog mode
+```
+
+Macros are directed to the currently selected station.
+
+---
+
+# 10. KST map and aircraft overlay
+
+Click **Map** in the bridge.
+
+The map displays:
+
+- Your configured home station.
+- Current KST users with valid locators.
+- The selected station.
+- The great-circle path from home to the selected station.
+- AirScout aircraft matched to the selected path.
+
+## Map controls
+
+- **Refresh** — immediately reload stations and current aircraft data.
+- **Zoom +** — zoom in, centred on the home station.
+- **Zoom -** — zoom out, centred on the home station.
+- **Mouse wheel** — zoom in/out, centred on the home station.
+- **Fit** — fit the home station and all listed stations into view.
+- **Drag map** — temporarily pan the map. The next zoom action recentres on home.
+- **Turn rotator on click** — selecting a map station also triggers DXLog’s rotator command.
+- **Show AirScout path and aircraft** — enables or hides the selected path/aircraft overlay.
+
+The map checks AirScout’s local `/planes.json` output every **5 seconds**. Actual aircraft movement is limited by the update interval of the aircraft feed configured in AirScout. For example, a 90-second OpenSky cycle will cause aircraft positions to update in larger steps even though the bridge checks every five seconds.
+
+OpenStreetMap tiles are cached at:
+
+```text
+%APPDATA%\DXLog.net\KstMapTiles
+```
+
+---
+
+# 11. Rotator control
+
+The bridge uses DXLog’s existing short-path rotator command, equivalent to **Ctrl+F12**.
+
+Before using it:
+
+1. Configure the rotator normally in DXLog.
+2. Confirm that Ctrl+F12 turns the antenna to the callsign in the current entry line.
+3. Open the KST map.
+4. Leave **Turn rotator on click** enabled.
+5. Click a station on the map.
+
+The bridge first puts the callsign/locator into DXLog, then triggers the DXLog rotator command after a short delay.
+
+If the rotator does not move, test Ctrl+F12 directly in DXLog before troubleshooting the bridge.
+
+---
+
+# 12. Refresh intervals
+
+```text
+KST station list:                 every 10 seconds
+AirScout full AS rescan pause:    20 seconds after a completed pass
+AirScout per-path timeout:        2 seconds
+KST map refresh:                  every 5 seconds
+AirScout /planes.json check:      at most every 5 seconds
+Selected path query:              immediate when selected
+QSO logged refresh:               immediate/short delayed refresh
+```
+
+The aircraft feed’s own cycle remains the limiting factor for new aircraft positions.
+
+---
+
+# 13. Saved settings
+
+The bridge stores its configuration at:
+
+```text
+%APPDATA%\DXLog.net\KstChatBridgeTelnet.ini
+```
+
+This includes:
+
+- ON4KST host, port, room, callsign and password.
+- Name and home locator.
+- AirScout enable state and ports.
+- Macros.
+- Window position and size.
+- Display colours and title-bar colour.
+
+**Security note:** the ON4KST password is stored in this local INI file. Do not share the file, and protect access to the Windows account.
+
+To reset all bridge settings, close DXLog and rename or delete `KstChatBridgeTelnet.ini`.
+
+---
+
+# 14. Troubleshooting
+
+## The bridge does not appear in DXLog
+
+- Confirm the DLL is in `%APPDATA%\DXLog.net\CustomForms`.
+- Confirm the project was built as **x86** and targets **.NET Framework 4.8**.
+- Close and restart DXLog after replacing the DLL.
+
+## KST does not connect
+
+- Check the ON4KST callsign and password.
+- Confirm host `www.on4kst.info` and port `23000`.
+- Check Windows Firewall and internet access.
+- Try a different KST room only after normal login is confirmed.
+
+## QTF and QRB are blank or incorrect
+
+- Enter a valid own Maidenhead locator in bridge Setup.
+- Confirm the remote KST station has a valid locator.
+
+## AirScout remains Off
+
+Enable **AirScout UDP integration** in bridge Setup.
+
+## AirScout remains Listening
+
+- Select a station with a valid locator.
+- Confirm DXLog has a valid active radio frequency.
+- Confirm AirScout Network Server is enabled.
+- Confirm UDP port `9872` matches in both programs.
+
+## AirScout shows Waiting but never OK
+
+- Check AirScout UDP Server Name is `AS`.
+- Check UDP port `9872`.
+- Allow AirScout and DXLog through Windows Firewall.
+- Confirm AirScout itself can calculate the selected path.
+
+## AS cells contain only `-`
+
+Communication is working, but AirScout is not reporting a suitable aircraft for those paths. Confirm live aircraft are visible in AirScout and that the correct band is active in DXLog.
+
+## Aircraft do not appear on the KST map
+
+- Select a station whose AS result has an aircraft.
+- Enable **Show AirScout path and aircraft**.
+- Confirm AirScout HTTP server port is `9880`.
+- Confirm `http://127.0.0.1:9880/planes.json` is available locally.
+- Confirm AirScout has a working live aircraft feed.
+
+## OpenSky gives an SSL/TLS trust error
+
+Use this exact AirScout OpenSky URL:
+
+```text
+https://opensky-network.org:443/api/states/all
+```
+
+The explicit `:443` prevents affected plugin versions from changing it to the failing `api.opensky-network.org` hostname. Check the setting again after restarting AirScout.
+
+## Map is blank
+
+- Check internet access for OpenStreetMap tiles.
+- Click **Refresh** or **Fit**.
+- Check the tile-cache folder is writable.
+- Temporarily remove old cached tiles from `%APPDATA%\DXLog.net\KstMapTiles` if required.
+
+## Rotator does not turn
+
+- Confirm the rotator works from DXLog itself.
+- Confirm Ctrl+F12 works with the active entry line.
+- Confirm the selected station has a valid locator.
+- Confirm **Turn rotator on click** is enabled.
+
+---
+
+# 15. Version 1.8 notes
+
+Version 1.8 includes:
+
+- Automatic full-room AirScout scanning.
+- Compact sortable AS column.
+- Selected path and aircraft overlay on the KST map.
+- AirScout UDP and HTTP port settings.
+- Five-second aircraft-map refresh.
+- Message-header white-block correction.
+- Home-centred button and mouse-wheel zoom.
+- Map dragging with the next zoom returning to the home station.
+- Ten-second KST station refresh and QSO-triggered refresh.
+- Existing CQ, directed messaging, macros, map and rotator functions.
+
+---
+
+## Files in this source package
+
+```text
+DXLogKstBridge.cs       complete bridge source code
+DXLogKstBridge.csproj   Visual Studio/.NET Framework project
+README.md               this guide
+```
+
