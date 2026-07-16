@@ -1,3 +1,11 @@
+<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/3d7a9f9e-45f4-4e57-9c6c-afaa7941afa5" />
+
+
+
+<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/ed7ff142-7fa1-43fe-a0ae-4b6702fc7726" />
+
+
+
 # DXLog KST Chat Bridge with AirScout
 
 **Version 1.8 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
