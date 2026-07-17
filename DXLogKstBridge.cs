@@ -14,6 +14,7 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -44,8 +45,11 @@ namespace DXLog.net
         private TableLayoutPanel _layout;
         private TextBox _hostBox;
         private NumericUpDown _portBox;
-        private TextBox _roomTitleBox;
-        private Button _roomButton;
+        private ComboBox _roomCombo;
+        private bool _applyingRoomSelection;
+        private ComboBox _distanceCombo;
+        private bool _applyingDistanceSelection;
+        private bool _rebuildingVisibleUserList;
         private Button _mapButton;
         private KstUserMapForm _mapForm;
         private TextBox _userBox;
@@ -61,6 +65,9 @@ namespace DXLog.net
         private Label _threadHeaderLabel;
         private Button _sendButton;
         private Button _cqButton;
+        private TextBox _composeBox;
+        private Label _composeTargetLabel;
+        private ToolTip _macroToolTip;
         private Label _statusLabel;
         private Label _airScoutStatusLabel;
         private AirScoutClient _airScout;
@@ -78,19 +85,23 @@ namespace DXLog.net
         private int _airScoutScanTotal = 0;
         private int _airScoutScanCompleted = 0;
         private long _airScoutAutoScanQrg = 0;
+        private bool _airScoutRescanRequested;
+        private string _airScoutUserSnapshotSignature = "";
+        private bool _forceUserRefreshAfterCurrent;
+        private bool _bandChangeRefreshRunning;
         private readonly object _airScoutPlaneLock = new object();
         private readonly Dictionary<string, AirScoutLivePlane> _airScoutPlaneById = new Dictionary<string, AirScoutLivePlane>(StringComparer.OrdinalIgnoreCase);
         private bool _airScoutPlaneFetchRunning;
         private DateTime _lastAirScoutPlaneFetchUtc = DateTime.MinValue;
         private string _airScoutPlaneFeedStatus = "Aircraft not read";
         private Button[] _macroButtons;
-        private Button _editMacrosButton;
         private System.Windows.Forms.Timer _userRefreshTimer;
         private System.Windows.Forms.Timer _qsoLoggedRefreshTimer;
         private bool _subscribedNewQsoSaved;
         private System.Windows.Forms.Timer _inputFocusTimer;
         private Control _inputFocusTarget;
-        private DateTime _inputFocusUntilUtc;
+        private bool _composeInputLocked;
+        private ComposeInputMessageFilter _composeInputFilter;
         private bool _composeDialogOpen;
         private bool _loadedPersistentColors;
         private bool _restoringWindowBounds;
@@ -99,10 +110,22 @@ namespace DXLog.net
         private bool _startupPositionRestoreDone;
         private bool _allowPositionSave;
         private DateTime _lastUserLayoutChangeUtc;
+        private string _lastStyledUserCall = "";
+        private ListViewItem _lastStyledMessageItem;
+        private ListViewItem _lastStyledThreadItem;
+        private System.Windows.Forms.Timer _workedCheckTimer;
+        private readonly Queue<string> _workedCheckQueue = new Queue<string>();
+        private readonly HashSet<string> _workedCheckQueuedCalls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, HashSet<string>> _workedBandsByCall = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        private bool _workedBandIndexBuildStarted;
+        private bool _workedBandIndexComplete;
+        private string _workedBandIndexStatus = "Worked-band index not loaded";
 
         private readonly Dictionary<string, KstUserInfo> _userMap = new Dictionary<string, KstUserInfo>(StringComparer.OrdinalIgnoreCase);
         private string _lastSelectedCall;
         private bool _refreshingUserList;
+        private DateTime _userRefreshStartedUtc = DateTime.MinValue;
+        private readonly Dictionary<string, KstUserInfo> _pendingUserSnapshot = new Dictionary<string, KstUserInfo>(StringComparer.OrdinalIgnoreCase);
         private int _userSortColumn = 0;
         private SortOrder _userSortOrder = SortOrder.Ascending;
 
@@ -226,6 +249,7 @@ namespace DXLog.net
                     if (_contestData != null)
                         _contestData.FocusedRadioChanged += new ContestData.FocusedRadioChange(HandleDxLogFocusChanged);
                     SubscribeDxLogQsoSavedEvent();
+                    BeginBuildWorkedBandIndex();
                 }
             }
 
@@ -250,10 +274,20 @@ namespace DXLog.net
                     _qsoLoggedRefreshTimer.Stop();
                     _qsoLoggedRefreshTimer.Dispose();
                 }
+                if (_workedCheckTimer != null)
+                {
+                    _workedCheckTimer.Stop();
+                    _workedCheckTimer.Dispose();
+                }
                 if (_inputFocusTimer != null)
                 {
                     _inputFocusTimer.Stop();
                     _inputFocusTimer.Dispose();
+                }
+                if (_composeInputFilter != null)
+                {
+                    try { Application.RemoveMessageFilter(_composeInputFilter); } catch { }
+                    _composeInputFilter = null;
                 }
                 if (_persistSaveTimer != null)
                 {
@@ -378,22 +412,62 @@ namespace DXLog.net
             _userBox = new TextBox { Text = _settings.Callsign };
             _passBox = new TextBox { Text = _settings.Password, UseSystemPasswordChar = true };
 
-            _setupButton = new Button { Text = "Setup", Dock = DockStyle.Fill };
-            _connectButton = new Button { Text = "Connect", Dock = DockStyle.Fill };
-            _disconnectButton = new Button { Text = "Disconnect", Dock = DockStyle.Fill, Enabled = false };
-            _roomButton = new Button { Text = "Room", Dock = DockStyle.Fill };
-            _mapButton = new Button { Text = "Map", Dock = DockStyle.Fill };
-            _roomTitleBox = new TextBox { Text = KstRoomTitles.GetTitle(_settings.Room), Dock = DockStyle.Fill, ReadOnly = true, BackColor = SystemColors.Window, Cursor = Cursors.Hand };
+            _setupButton = new Button { Text = "Setup", Dock = DockStyle.Fill, Margin = new Padding(3) };
+            _connectButton = new Button { Text = "Connect", Dock = DockStyle.Fill, Margin = new Padding(3) };
+            _disconnectButton = new Button { Text = "Disconnect", Dock = DockStyle.Fill, Margin = new Padding(3), Enabled = false };
+            _mapButton = new Button { Text = "Map", Dock = DockStyle.Fill, Margin = new Padding(3) };
+            _roomCombo = new ComboBox
+            {
+                Dock = DockStyle.Fill,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                FlatStyle = FlatStyle.Standard,
+                IntegralHeight = false,
+                DropDownHeight = 280,
+                TabStop = true,
+                Margin = new Padding(3)
+            };
+            PopulateRoomCombo(_roomCombo, _settings.Room);
 
-            // Clean top row:
-            //   Setup on the left, Room + room title in the centre,
-            //   Connect and Disconnect together on the top-right.
-            _layout.Controls.Add(_setupButton, 0, 0);
-            _layout.Controls.Add(_roomButton, 4, 0);
-            _layout.Controls.Add(_roomTitleBox, 5, 0); _layout.SetColumnSpan(_roomTitleBox, 2);
-            _layout.Controls.Add(_mapButton, 7, 0);
-            _layout.Controls.Add(_connectButton, 9, 0);
-            _layout.Controls.Add(_disconnectButton, 10, 0); _layout.SetColumnSpan(_disconnectButton, 2);
+            _distanceCombo = new ComboBox
+            {
+                Dock = DockStyle.Fill,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                FlatStyle = FlatStyle.Standard,
+                IntegralHeight = true,
+                TabStop = true,
+                Margin = new Padding(3)
+            };
+            PopulateDistanceCombo(_distanceCombo, _settings.DistanceFilterKm);
+
+            // DXLog-style fixed controls with a flexible centre spacer. Keep the
+            // distance filter beside Map; keep room selection and connection controls
+            // together at the right-hand side. Label columns are deliberately wide
+            // enough for the complete words at DXLog's normal UI font and DPI.
+            TableLayoutPanel headerPanel = new TableLayoutPanel();
+            headerPanel.Dock = DockStyle.Fill;
+            headerPanel.Margin = new Padding(0);
+            headerPanel.Padding = new Padding(0);
+            headerPanel.ColumnCount = 10;
+            headerPanel.RowCount = 1;
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 78));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 114));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 2));
+            headerPanel.Controls.Add(_setupButton, 0, 0);
+            headerPanel.Controls.Add(_mapButton, 1, 0);
+            headerPanel.Controls.Add(new Label { Text = "Distance", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(6, 0, 0, 0), AutoEllipsis = false }, 2, 0);
+            headerPanel.Controls.Add(_distanceCombo, 3, 0);
+            headerPanel.Controls.Add(new Label { Text = "Room", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(6, 0, 0, 0), AutoEllipsis = false }, 5, 0);
+            headerPanel.Controls.Add(_roomCombo, 6, 0);
+            headerPanel.Controls.Add(_connectButton, 7, 0);
+            headerPanel.Controls.Add(_disconnectButton, 8, 0);
+            _layout.Controls.Add(headerPanel, 0, 0); _layout.SetColumnSpan(headerPanel, 12);
 
             _split = new SplitContainer();
             _split.Dock = DockStyle.Fill;
@@ -409,11 +483,11 @@ namespace DXLog.net
             _split.Panel2MinSize = 50;
             _split.SizeChanged += delegate { ApplySplitSize(); };
 
-            _users = new ListView();
+            _users = new BufferedListView();
             _users.Dock = DockStyle.Fill;
             _users.View = View.Details;
             _users.FullRowSelect = true;
-            _users.GridLines = true;
+            _users.GridLines = false;
             _users.HideSelection = false;
             _users.OwnerDraw = true;
             _users.DrawColumnHeader += DrawListColumnHeader;
@@ -427,6 +501,8 @@ namespace DXLog.net
             _users.Columns.Add("QTF", 60);
             _users.Columns.Add("QRB", 85);
             _users.Columns.Add("AS", 48);
+            _users.Columns.Add("Active", 64);
+            _users.Columns.Add("Worked", 110);
             _users.ShowItemToolTips = true;
             _users.DoubleClick += delegate { PutSelectedUserIntoDxLog(); };
             _users.MouseUp += UsersMouseUp;
@@ -443,7 +519,7 @@ namespace DXLog.net
             _messages = CreateMessageListView();
             _messages.DoubleClick += delegate { PutSelectedMessageIntoDxLog(); };
             _messages.MouseUp += MessagesMouseUp;
-            _messages.SelectedIndexChanged += delegate { UpdateLastSelectedCallFromMessageList(_messages); RestyleMessages(); RefreshConversationView(); };
+            _messages.SelectedIndexChanged += delegate { MessagesSelectedIndexChanged(); };
 
             Panel threadPanel = new Panel();
             threadPanel.Dock = DockStyle.Fill;
@@ -451,7 +527,7 @@ namespace DXLog.net
             _threadMessages = CreateMessageListView();
             _threadMessages.DoubleClick += delegate { PutSelectedThreadMessageIntoDxLog(); };
             _threadMessages.MouseUp += MessagesMouseUp;
-            _threadMessages.SelectedIndexChanged += delegate { UpdateLastSelectedCallFromMessageList(_threadMessages); RestyleThreadMessages(); };
+            _threadMessages.SelectedIndexChanged += delegate { ThreadMessagesSelectedIndexChanged(); };
             threadPanel.Controls.Add(_threadMessages);
             threadPanel.Controls.Add(_threadHeaderLabel);
 
@@ -462,28 +538,49 @@ namespace DXLog.net
             _split.Panel2.Controls.Add(_messageSplit);
             _layout.Controls.Add(_split, 0, 1); _layout.SetColumnSpan(_split, 12);
 
-            _sendButton = new Button { Text = "CQ", Dock = DockStyle.Fill, Enabled = false };
-            _cqButton = new Button { Text = "To call", Dock = DockStyle.Fill, Enabled = false };
-            _layout.Controls.Add(_sendButton, 0, 2);
-            _layout.Controls.Add(_cqButton, 1, 2);
+            TableLayoutPanel actionPanel = new TableLayoutPanel();
+            actionPanel.Dock = DockStyle.Fill;
+            actionPanel.Margin = new Padding(0);
+            actionPanel.Padding = new Padding(0);
+            actionPanel.RowCount = 1;
+            actionPanel.ColumnCount = 9;
+            actionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
+            actionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
+            actionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            actionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
+            for (int i = 0; i < 4; i++) actionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
+            actionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 2));
 
+            _sendButton = new Button { Text = "CQ", Dock = DockStyle.Fill, Margin = new Padding(3), Enabled = false };
+            _composeTargetLabel = new Label { Text = "CQ", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, BorderStyle = BorderStyle.FixedSingle, Padding = new Padding(6, 0, 2, 0), Margin = new Padding(3) };
+            _composeBox = new TextBox { Dock = DockStyle.Fill, Margin = new Padding(3), Enabled = false };
+            _cqButton = new Button { Text = "Send", Dock = DockStyle.Fill, Margin = new Padding(3), Enabled = false };
+            actionPanel.Controls.Add(_sendButton, 0, 0);
+            actionPanel.Controls.Add(_composeTargetLabel, 1, 0);
+            actionPanel.Controls.Add(_composeBox, 2, 0);
+            actionPanel.Controls.Add(_cqButton, 3, 0);
+
+            _macroToolTip = new ToolTip { AutoPopDelay = 12000, InitialDelay = 250, ReshowDelay = 100, ShowAlways = true };
             _macroButtons = new Button[4];
             for (int i = 0; i < _macroButtons.Length; i++)
             {
                 int macroIndex = i;
-                _macroButtons[i] = new Button { Text = "M" + (i + 1).ToString(), Dock = DockStyle.Fill, Enabled = false };
+                _macroButtons[i] = new Button { Text = "M" + (i + 1).ToString(), Dock = DockStyle.Fill, Margin = new Padding(3), Enabled = false, MinimumSize = new Size(54, 24) };
                 _macroButtons[i].Click += async delegate { await SendMacroClicked(macroIndex); };
-                _layout.Controls.Add(_macroButtons[i], i + 2, 2);
+                _macroButtons[i].MouseEnter += delegate { UpdateMacroToolTip(macroIndex); };
+                _macroButtons[i].MouseUp += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Right) EditMacrosClicked(macroIndex); };
+                actionPanel.Controls.Add(_macroButtons[i], 4 + i, 0);
             }
-            _editMacrosButton = new Button { Text = "Edit macros", Dock = DockStyle.Fill };
-            _editMacrosButton.Click += delegate { EditMacrosClicked(); };
-            // Keep the macro editor on the far-right of the button row.
-            _layout.Controls.Add(_editMacrosButton, 10, 2); _layout.SetColumnSpan(_editMacrosButton, 2);
+            _layout.Controls.Add(actionPanel, 0, 2); _layout.SetColumnSpan(actionPanel, 12);
 
+            TableLayoutPanel statusPanel = new TableLayoutPanel { Dock = DockStyle.Fill, Margin = new Padding(0), Padding = new Padding(0), ColumnCount = 2, RowCount = 1 };
+            statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 70));
+            statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
             _statusLabel = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Text = "Ready" };
             _airScoutStatusLabel = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Text = "AirScout: Off" };
-            _layout.Controls.Add(_statusLabel, 0, 3); _layout.SetColumnSpan(_statusLabel, 9);
-            _layout.Controls.Add(_airScoutStatusLabel, 9, 3); _layout.SetColumnSpan(_airScoutStatusLabel, 3);
+            statusPanel.Controls.Add(_statusLabel, 0, 0);
+            statusPanel.Controls.Add(_airScoutStatusLabel, 1, 0);
+            _layout.Controls.Add(statusPanel, 0, 3); _layout.SetColumnSpan(statusPanel, 12);
 
             Controls.Add(_layout);
 
@@ -501,13 +598,30 @@ namespace DXLog.net
             Resize += delegate { SaveLayoutAfterUserMoveOrResize(); };
 
             _setupButton.Click += delegate { SetupClicked(); };
-            _roomButton.Click += async delegate { await ChangeRoomClicked(); };
-            _roomTitleBox.Click += async delegate { await ChangeRoomClicked(); };
+            _distanceCombo.SelectionChangeCommitted += delegate { if (!_applyingDistanceSelection) ApplyDistanceFilterSelection(); };
+            _roomCombo.SelectionChangeCommitted += async delegate { if (!_applyingRoomSelection) await ChangeRoomClicked(); };
+
+            // DXLog can reclaim focus before a ComboBox opens. Explicitly open both
+            // selectors on mouse click and the normal keyboard shortcuts so their
+            // drop-down lists remain reliable while the bridge is hosted inside DXLog.
+            HookReliableDropDown(_distanceCombo);
+            HookReliableDropDown(_roomCombo);
             _mapButton.Click += delegate { ShowMapWindow(); };
             _connectButton.Click += async delegate { await ConnectClicked(); };
             _disconnectButton.Click += delegate { DisconnectClicked(); };
-            _sendButton.Click += async delegate { await CqClicked(); };
-            _cqButton.Click += async delegate { await ToCallClicked(); };
+            _sendButton.Click += delegate { PrepareCqCompose(); };
+            _cqButton.Click += async delegate { await SendComposeClicked(); };
+            _composeBox.KeyDown += async delegate(object sender, KeyEventArgs e)
+            {
+                if (e.KeyCode == Keys.Enter)
+                {
+                    e.SuppressKeyPress = true;
+                    await SendComposeClicked();
+                }
+            };
+            HookEditableFocus(_composeBox);
+            _composeInputFilter = new ComposeInputMessageFilter(ShouldCaptureComposeInput, GetComposeInputHandle, ReleaseComposeInputCapture);
+            Application.AddMessageFilter(_composeInputFilter);
 
             _persistSaveTimer = new System.Windows.Forms.Timer();
             _persistSaveTimer.Interval = 500;
@@ -530,10 +644,10 @@ namespace DXLog.net
             HookTitleBarMenuPersistence();
 
             _inputFocusTimer = new System.Windows.Forms.Timer();
-            _inputFocusTimer.Interval = 60;
+            _inputFocusTimer.Interval = 125;
             _inputFocusTimer.Tick += delegate
             {
-                if (_inputFocusTarget == null || DateTime.UtcNow > _inputFocusUntilUtc)
+                if (!_composeInputLocked || _inputFocusTarget == null || _inputFocusTarget.IsDisposed)
                 {
                     _inputFocusTimer.Stop();
                     _inputFocusTarget = null;
@@ -541,10 +655,11 @@ namespace DXLog.net
                 }
                 try
                 {
-                    if (!_inputFocusTarget.IsDisposed && _inputFocusTarget.CanFocus)
+                    if (_inputFocusTarget.Enabled && _inputFocusTarget.Visible && !_inputFocusTarget.ContainsFocus && _inputFocusTarget.CanFocus)
                     {
+                        Activate();
                         ActiveControl = _inputFocusTarget;
-                        _inputFocusTarget.Focus();
+                        _inputFocusTarget.Select();
                     }
                 }
                 catch { }
@@ -566,10 +681,16 @@ namespace DXLog.net
                 await ForceRefreshAfterQsoLoggedAsync();
             };
 
+            // DXLog duplicate checks can touch the contest log. Process at most one
+            // station per timer tick so a large KST room never causes a long UI pause.
+            _workedCheckTimer = new System.Windows.Forms.Timer();
+            _workedCheckTimer.Interval = 75;
+            _workedCheckTimer.Tick += delegate { ProcessNextWorkedCheck(); };
+
             _airScoutRefreshTimer = new System.Windows.Forms.Timer();
             // Auto-scan one KST station at a time. AirScout normally replies quickly,
             // so a short UI timer lets the whole list populate without flooding UDP.
-            _airScoutRefreshTimer.Interval = 250;
+            _airScoutRefreshTimer.Interval = 500;
             _airScoutRefreshTimer.Tick += delegate
             {
                 RunAirScoutAutoScanTick();
@@ -583,7 +704,7 @@ namespace DXLog.net
 
         private ListView CreateMessageListView()
         {
-            ListView lv = new ListView();
+            ListView lv = new BufferedListView();
             lv.Dock = DockStyle.Fill;
             lv.View = View.Details;
             lv.FullRowSelect = true;
@@ -1060,18 +1181,22 @@ namespace DXLog.net
 
         private void AdjustUserColumns()
         {
-            if (_users == null || _users.Columns.Count < 6) return;
+            if (_users == null || _users.Columns.Count < 8) return;
 
-            // Keep the AirScout result compact: it only displays NOW, Xm, '-'
-            // or blank. Give the reclaimed space to the more useful Name column.
-            int callW = 90;
-            int locW = 80;
-            int qtfW = 60;
-            int qrbW = 80;
-            const int asW = 48;
-            int nameW = Math.Max(145,
-                _users.ClientSize.Width - callW - locW - qtfW - qrbW - asW - 4);
-            int[] widths = new int[] { callW, nameW, locW, qtfW, qrbW, asW };
+            // Keep the compact operational columns fixed and let Name absorb the
+            // remaining width. Active is the most recent KST message seen from
+            // that station during this bridge session. Worked contains the cached
+            // DXLog bands for the callsign.
+            int callW = 86;
+            int locW = 72;
+            int qtfW = 52;
+            int qrbW = 66;
+            const int asW = 44;
+            const int lastW = 64;
+            const int workedW = 106;
+            int nameW = Math.Max(92,
+                _users.ClientSize.Width - callW - locW - qtfW - qrbW - asW - lastW - workedW - 4);
+            int[] widths = new int[] { callW, nameW, locW, qtfW, qrbW, asW, lastW, workedW };
 
             for (int i = 0; i < widths.Length; i++)
             {
@@ -1132,10 +1257,20 @@ namespace DXLog.net
             if (_split != null) { _split.BackColor = windowBack; _split.ForeColor = windowFore; }
             if (_statusLabel != null) { _statusLabel.BackColor = windowBack; _statusLabel.ForeColor = windowFore; }
             if (_airScoutStatusLabel != null) { _airScoutStatusLabel.BackColor = windowBack; _airScoutStatusLabel.ForeColor = windowFore; }
-            if (_roomTitleBox != null)
+            if (_roomCombo != null)
             {
-                _roomTitleBox.BackColor = KstColor("List background", SystemColors.Window);
-                _roomTitleBox.ForeColor = KstColor("List text", SystemColors.WindowText);
+                _roomCombo.BackColor = KstColor("List background", SystemColors.Window);
+                _roomCombo.ForeColor = KstColor("List text", SystemColors.WindowText);
+            }
+            if (_distanceCombo != null)
+            {
+                _distanceCombo.BackColor = KstColor("List background", SystemColors.Window);
+                _distanceCombo.ForeColor = KstColor("List text", SystemColors.WindowText);
+            }
+            if (_composeBox != null)
+            {
+                _composeBox.BackColor = KstColor("List background", SystemColors.Window);
+                _composeBox.ForeColor = KstColor("List text", SystemColors.WindowText);
             }
             if (_users != null)
             {
@@ -1157,6 +1292,11 @@ namespace DXLog.net
                 _threadHeaderLabel.BackColor = windowBack;
                 _threadHeaderLabel.ForeColor = windowFore;
             }
+            if (_composeTargetLabel != null)
+            {
+                _composeTargetLabel.BackColor = KstColor("List background", SystemColors.Window);
+                _composeTargetLabel.ForeColor = KstColor("List text", SystemColors.WindowText);
+            }
 
             ApplyButtonColors();
         }
@@ -1167,13 +1307,11 @@ namespace DXLog.net
             Color buttonFore = KstColor("Button text", SystemColors.ControlText);
 
             ApplyButtonColors(_setupButton, buttonBack, buttonFore);
-            ApplyButtonColors(_roomButton, buttonBack, buttonFore);
             ApplyButtonColors(_mapButton, buttonBack, buttonFore);
             ApplyButtonColors(_connectButton, buttonBack, buttonFore);
             ApplyButtonColors(_disconnectButton, buttonBack, buttonFore);
             ApplyButtonColors(_sendButton, buttonBack, buttonFore);
             ApplyButtonColors(_cqButton, buttonBack, buttonFore);
-            ApplyButtonColors(_editMacrosButton, buttonBack, buttonFore);
 
             if (_macroButtons != null)
             {
@@ -1237,12 +1375,42 @@ namespace DXLog.net
             }
         }
 
+        private void MessagesSelectedIndexChanged()
+        {
+            ListViewItem current = _messages != null && _messages.SelectedItems.Count > 0 ? _messages.SelectedItems[0] : null;
+            ListViewItem previous = _lastStyledMessageItem;
+            _lastStyledMessageItem = current;
+            RestyleMessageItem(previous);
+            RestyleMessageItem(current);
+            UpdateLastSelectedCallFromMessageList(_messages);
+            RefreshConversationView();
+            UpdateComposeTarget();
+        }
+
+        private void ThreadMessagesSelectedIndexChanged()
+        {
+            ListViewItem current = _threadMessages != null && _threadMessages.SelectedItems.Count > 0 ? _threadMessages.SelectedItems[0] : null;
+            ListViewItem previous = _lastStyledThreadItem;
+            _lastStyledThreadItem = current;
+            RestyleMessageItem(previous);
+            RestyleMessageItem(current);
+            UpdateLastSelectedCallFromMessageList(_threadMessages);
+            UpdateComposeTarget();
+        }
+
+        private void RestyleMessageItem(ListViewItem item)
+        {
+            if (item == null || item.ListView == null) return;
+            KstParsedLine msg = item.Tag as KstParsedLine;
+            StyleMessageItem(item, msg, msg != null && msg.Worked);
+            try { item.ListView.Invalidate(item.Bounds); } catch { }
+        }
+
         private void StyleUserItem(ListViewItem item, KstUserInfo user)
         {
             if (item == null) return;
             bool selected = item.Selected;
-            bool worked = false;
-            if (user != null) worked = IsWorkedBefore(user.Call);
+            bool worked = user != null && user.WorkedCurrentBand;
 
             if (selected)
             {
@@ -1359,11 +1527,6 @@ namespace DXLog.net
             TextRenderer.DrawText(e.Graphics, e.SubItem.Text, f, e.Bounds, fore,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
 
-            using (Pen pen = new Pen(SystemColors.ControlDark))
-            {
-                e.Graphics.DrawLine(pen, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
-                e.Graphics.DrawLine(pen, e.Bounds.Right - 1, e.Bounds.Top, e.Bounds.Right - 1, e.Bounds.Bottom);
-            }
         }
 
         private void AddLabel(string text, int column, int row)
@@ -1387,18 +1550,264 @@ namespace DXLog.net
 
         private void CaptureInputFocus(Control c)
         {
-            if (c == null) return;
+            if (c == null || c.IsDisposed || !c.Enabled) return;
+            _composeInputLocked = true;
             _inputFocusTarget = c;
-            _inputFocusUntilUtc = DateTime.UtcNow.AddSeconds(3);
             try
             {
+                // DXLog installs its own keyboard filters. Re-add ours whenever the
+                // operator enters the compose field so this filter is the newest and
+                // gets first opportunity to redirect the keystroke.
+                if (_composeInputFilter != null)
+                {
+                    Application.RemoveMessageFilter(_composeInputFilter);
+                    Application.AddMessageFilter(_composeInputFilter);
+                }
+            }
+            catch { }
+            try
+            {
+                Activate();
                 ActiveControl = c;
-                c.Focus();
+                c.Select();
                 TextBox tb = c as TextBox;
                 if (tb != null) tb.SelectionStart = tb.Text.Length;
             }
             catch { }
             if (_inputFocusTimer != null && !_inputFocusTimer.Enabled) _inputFocusTimer.Start();
+        }
+
+        private bool ShouldCaptureComposeInput()
+        {
+            return _composeInputLocked && _composeBox != null && !_composeBox.IsDisposed && _composeBox.Enabled && _composeBox.Visible && Visible;
+        }
+
+        private IntPtr GetComposeInputHandle()
+        {
+            try
+            {
+                if (_composeBox != null && !_composeBox.IsDisposed && _composeBox.IsHandleCreated) return _composeBox.Handle;
+            }
+            catch { }
+            return IntPtr.Zero;
+        }
+
+        private void ReleaseComposeInputCapture()
+        {
+            _composeInputLocked = false;
+            _inputFocusTarget = null;
+            try { if (_inputFocusTimer != null) _inputFocusTimer.Stop(); } catch { }
+        }
+
+        private void HookReliableDropDown(ComboBox combo)
+        {
+            if (combo == null) return;
+
+            combo.MouseDown += delegate
+            {
+                try
+                {
+                    if (combo.Enabled && !combo.DroppedDown)
+                        BeginInvoke(new MethodInvoker(delegate
+                        {
+                            if (combo != null && !combo.IsDisposed && combo.Enabled)
+                                combo.DroppedDown = true;
+                        }));
+                }
+                catch { }
+            };
+
+            combo.KeyDown += delegate(object sender, KeyEventArgs e)
+            {
+                if (e.KeyCode == Keys.F4 || (e.Alt && e.KeyCode == Keys.Down))
+                {
+                    try { combo.DroppedDown = true; } catch { }
+                    e.Handled = true;
+                    e.SuppressKeyPress = true;
+                }
+            };
+        }
+
+        private void PopulateDistanceCombo(ComboBox combo, int selectedLimitKm)
+        {
+            if (combo == null) return;
+            _applyingDistanceSelection = true;
+            try
+            {
+                combo.BeginUpdate();
+                combo.Items.Clear();
+                int[] limits = new int[] { 0, 100, 200, 300, 400, 500, 1000, 1500, 2000 };
+                int selectedIndex = 0;
+                for (int i = 0; i < limits.Length; i++)
+                {
+                    KstDistanceOption option = new KstDistanceOption(limits[i]);
+                    combo.Items.Add(option);
+                    if (limits[i] == selectedLimitKm) selectedIndex = i;
+                }
+                combo.SelectedIndex = selectedIndex;
+            }
+            finally
+            {
+                combo.EndUpdate();
+                _applyingDistanceSelection = false;
+            }
+        }
+
+        private void ApplyDistanceFilterSelection()
+        {
+            KstDistanceOption option = _distanceCombo != null ? _distanceCombo.SelectedItem as KstDistanceOption : null;
+            if (option == null || _settings == null) return;
+            if (_settings.DistanceFilterKm == option.MaxKm) return;
+
+            _settings.DistanceFilterKm = option.MaxKm;
+            _settings.Save();
+            RebuildVisibleUserList();
+            ResetAirScoutAutoScan(true);
+            UpdateStatus(option.MaxKm <= 0
+                ? "Distance filter: All stations"
+                : "Distance filter: 0-" + option.MaxKm.ToString() + " km");
+        }
+
+        private bool IsUserVisibleForCurrentFilter(KstUserInfo user)
+        {
+            if (user == null) return false;
+            int maxKm = _settings != null ? _settings.DistanceFilterKm : 0;
+            if (maxKm <= 0) return true;
+
+            string myLocator = NormalizeLocator(GetOwnLocator());
+            string dxLocator = NormalizeLocator(user.Locator);
+            if (!IsValidLocator(myLocator) || !IsValidLocator(dxLocator)) return false;
+
+            try
+            {
+                double km = DistanceKm(LocatorToPoint(myLocator), LocatorToPoint(dxLocator));
+                return km <= maxKm + 0.0001;
+            }
+            catch { return false; }
+        }
+
+        private void RebuildVisibleUserList()
+        {
+            if (_users == null) return;
+            List<KstUserInfo> users = new List<KstUserInfo>(_userMap.Values);
+            _rebuildingVisibleUserList = true;
+            try
+            {
+                _users.BeginUpdate();
+                _users.Items.Clear();
+                foreach (KstUserInfo user in users)
+                {
+                    if (user != null && IsUserVisibleForCurrentFilter(user)) UpsertUser(user);
+                }
+            }
+            finally
+            {
+                _rebuildingVisibleUserList = false;
+                try { _users.EndUpdate(); } catch { }
+            }
+
+            if (!String.IsNullOrWhiteSpace(_lastSelectedCall) && FindUserItem(_lastSelectedCall) == null)
+                _lastSelectedCall = "";
+            SortUsers();
+            UpdateComposeTarget();
+            RefreshConversationView();
+            RefreshMapWindow();
+        }
+
+        private void PopulateRoomCombo(ComboBox combo, int selectedRoom)
+        {
+            if (combo == null) return;
+            _applyingRoomSelection = true;
+            try
+            {
+                combo.BeginUpdate();
+                combo.Items.Clear();
+                foreach (KstRoomOption option in KstRoomTitles.GetOptions()) combo.Items.Add(option);
+                int selectedIndex = -1;
+                for (int i = 0; i < combo.Items.Count; i++)
+                {
+                    KstRoomOption option = combo.Items[i] as KstRoomOption;
+                    if (option != null && option.Room == selectedRoom) { selectedIndex = i; break; }
+                }
+                if (selectedIndex < 0)
+                {
+                    KstRoomOption custom = new KstRoomOption(selectedRoom, KstRoomTitles.GetTitle(selectedRoom));
+                    combo.Items.Add(custom);
+                    selectedIndex = combo.Items.Count - 1;
+                }
+                combo.SelectedIndex = selectedIndex;
+            }
+            finally
+            {
+                combo.EndUpdate();
+                _applyingRoomSelection = false;
+            }
+        }
+
+        private void PrepareCqCompose()
+        {
+            if (_kst == null || !_kst.IsConnected) return;
+            ClearSelectedStation();
+            UpdateComposeTarget();
+            CaptureInputFocus(_composeBox);
+            UpdateStatus("Compose a general KST message and press Send or Enter");
+        }
+
+        private void UpdateComposeTarget()
+        {
+            if (_composeTargetLabel == null) return;
+            string call = GetHighlightedCall();
+            _composeTargetLabel.Text = String.IsNullOrWhiteSpace(call) ? "CQ" : "To: " + CleanCall(call);
+            if (_composeBox != null)
+                _composeBox.AccessibleDescription = String.IsNullOrWhiteSpace(call) ? "General KST message" : "Message to " + CleanCall(call);
+        }
+
+        private async Task SendComposeClicked()
+        {
+            if (_kst == null || !_kst.IsConnected || _composeBox == null) return;
+            string body = (_composeBox.Text ?? "").Trim();
+            if (body.Length == 0)
+            {
+                UpdateStatus("Type a message first");
+                CaptureInputFocus(_composeBox);
+                return;
+            }
+
+            string call = GetHighlightedCall();
+            if (String.IsNullOrWhiteSpace(call))
+            {
+                await _kst.SendCommandAsync(body);
+                UpdateStatus("Sent general KST message");
+            }
+            else
+            {
+                await SendDirectedMessageAsync(call, body);
+                UpdateStatus("Sent directed KST message to " + CleanCall(call));
+            }
+            _composeBox.Clear();
+            CaptureInputFocus(_composeBox);
+        }
+
+        private void UpdateMacroToolTip(int index)
+        {
+            if (_macroToolTip == null || _macroButtons == null || index < 0 || index >= _macroButtons.Length) return;
+            string call = GetHighlightedCall();
+            string template = (_settings != null && _settings.Macros != null && index < _settings.Macros.Length) ? (_settings.Macros[index] ?? "") : "";
+            string preview = String.IsNullOrWhiteSpace(template) ? "Macro is empty" : ExpandMacro(template, String.IsNullOrWhiteSpace(call) ? "CALL" : call);
+            string target = String.IsNullOrWhiteSpace(call) ? "Select a station before sending" : "Will send to " + CleanCall(call);
+            _macroToolTip.SetToolTip(_macroButtons[index], target + Environment.NewLine + preview + Environment.NewLine + "Right-click to edit M" + (index + 1).ToString());
+        }
+
+        private void RestyleUserCall(string call)
+        {
+            if (_users == null || String.IsNullOrWhiteSpace(call)) return;
+            foreach (ListViewItem item in _users.Items)
+            {
+                if (!String.Equals(CleanCall(item.Text), CleanCall(call), StringComparison.OrdinalIgnoreCase)) continue;
+                StyleUserItem(item, item.Tag as KstUserInfo);
+                _users.Invalidate(item.Bounds);
+                break;
+            }
         }
 
         private void SetupClicked()
@@ -1410,7 +1819,7 @@ namespace DXLog.net
                 _settings = dlg.Settings;
                 ApplySettingsToUi();
                 _settings.Save();
-                RecalculateAllUsers();
+                RebuildVisibleUserList();
                 ConfigureAirScoutClient();
                 if (_kst != null && _kst.IsConnected)
                 {
@@ -1455,24 +1864,22 @@ namespace DXLog.net
 
         private async Task ChangeRoomClicked()
         {
-            KstRoomDialog dlg = new KstRoomDialog(_settings != null ? _settings.Room : 2);
-            if (dlg.ShowDialog(this) != DialogResult.OK) return;
-
-            int newRoom = dlg.Room;
+            KstRoomOption option = _roomCombo != null ? _roomCombo.SelectedItem as KstRoomOption : null;
+            if (option == null) return;
+            int newRoom = option.Room;
             if (_settings == null) _settings = new KstSettings();
-            if (_settings.Room == newRoom)
-            {
-                ApplySettingsToUi();
-                return;
-            }
+            if (_settings.Room == newRoom) return;
 
             _settings.Room = newRoom;
-            ApplySettingsToUi();
             _settings.Save();
+            _pendingUserSnapshot.Clear();
+            _refreshingUserList = false;
             _userMap.Clear();
             if (_users != null) _users.Items.Clear();
-            _messages.Items.Clear();
+            if (_messages != null) _messages.Items.Clear();
             if (_threadMessages != null) _threadMessages.Items.Clear();
+            ResetAirScoutAutoScan(true);
+            RefreshMapWindow();
 
             if (_kst != null && _kst.IsConnected)
             {
@@ -1488,11 +1895,17 @@ namespace DXLog.net
 
         private void EditMacrosClicked()
         {
-            KstMacroDialog dlg = new KstMacroDialog(_settings.Macros);
+            EditMacrosClicked(0);
+        }
+
+        private void EditMacrosClicked(int focusIndex)
+        {
+            KstMacroDialog dlg = new KstMacroDialog(_settings.Macros, focusIndex);
             if (dlg.ShowDialog(this) == DialogResult.OK)
             {
                 _settings.Macros = dlg.Macros;
                 _settings.Save();
+                for (int i = 0; i < 4; i++) UpdateMacroToolTip(i);
                 UpdateStatus("KST macros saved");
             }
         }
@@ -1511,7 +1924,7 @@ namespace DXLog.net
             string body = ExpandMacro(template, call).Trim();
             if (body.Length == 0)
             {
-                UpdateStatus("Macro " + (index + 1).ToString() + " is empty. Use Edit macros first.");
+                UpdateStatus("Macro " + (index + 1).ToString() + " is empty. Right-click the macro button to edit it.");
                 return;
             }
             await SendDirectedMessageAsync(call, body);
@@ -1522,9 +1935,11 @@ namespace DXLog.net
         {
             _hostBox.Text = _settings.Host;
             _portBox.Value = Math.Max(_portBox.Minimum, Math.Min(_portBox.Maximum, _settings.Port));
-            _roomTitleBox.Text = KstRoomTitles.GetTitle(_settings.Room);
+            PopulateRoomCombo(_roomCombo, _settings.Room);
+            PopulateDistanceCombo(_distanceCombo, _settings.DistanceFilterKm);
             _userBox.Text = _settings.Callsign;
             _passBox.Text = _settings.Password;
+            UpdateComposeTarget();
         }
 
         private async Task ConnectClicked()
@@ -1549,8 +1964,10 @@ namespace DXLog.net
 
                 _settings.Save();
                 _messages.Items.Clear();
-            if (_threadMessages != null) _threadMessages.Items.Clear();
+                if (_threadMessages != null) _threadMessages.Items.Clear();
                 _users.Items.Clear();
+                _pendingUserSnapshot.Clear();
+                _refreshingUserList = false;
                 _userMap.Clear();
                 SetConnectionUi(false);
 
@@ -1694,14 +2111,24 @@ namespace DXLog.net
 
         private void ClearSelectedStation()
         {
+            string previousUser = _lastStyledUserCall;
+            ListViewItem previousMessage = _lastStyledMessageItem;
+            ListViewItem previousThreadMessage = _lastStyledThreadItem;
+
             ClearListSelection(_users);
             ClearListSelection(_messages);
             ClearListSelection(_threadMessages);
             _lastSelectedCall = "";
-            RestyleUsers();
-            RestyleMessages();
-            RestyleThreadMessages();
+            _lastStyledUserCall = "";
+            _lastStyledMessageItem = null;
+            _lastStyledThreadItem = null;
+
+            RestyleUserCall(previousUser);
+            RestyleMessageItem(previousMessage);
+            RestyleMessageItem(previousThreadMessage);
             RefreshConversationView();
+            UpdateComposeTarget();
+            RefreshMapWindow();
         }
 
         private static void ClearListSelection(ListView list)
@@ -1714,17 +2141,35 @@ namespace DXLog.net
 
         private void ResetSendBoxPlaceholder()
         {
-            // No inline message box is used. Send/To call open modal compose dialogs
-            // so DXLog cannot steal keyboard focus back to the log input line.
+            // Inline compose is active. Placeholder handling is retained only for compatibility
+            // with older call paths that still use the modal message prompt.
         }
 
         private async Task RefreshUsers()
         {
             if (_kst == null || !_kst.IsConnected) return;
+
+            if (_refreshingUserList)
+            {
+                // Never stack /SH US requests. A missing prompt used to leave BeginUpdate
+                // active and made the station list appear blank indefinitely.
+                if ((DateTime.UtcNow - _userRefreshStartedUtc).TotalSeconds < 8.0) return;
+                AbortUserRefresh("KST user-list refresh timed out; keeping the existing list");
+            }
+
+            _pendingUserSnapshot.Clear();
             _refreshingUserList = true;
-            foreach (KstUserInfo u in _userMap.Values) u.Dirty = true;
+            _userRefreshStartedUtc = DateTime.UtcNow;
             await _kst.SendCommandAsync("/SH US");
             UpdateStatus("Requested KST user list");
+        }
+
+        private void AbortUserRefresh(string status)
+        {
+            _pendingUserSnapshot.Clear();
+            _refreshingUserList = false;
+            _userRefreshStartedUtc = DateTime.MinValue;
+            if (!String.IsNullOrWhiteSpace(status)) UpdateStatus(status);
         }
 
         private void OnKstLoggedIn(object sender, EventArgs e)
@@ -1753,7 +2198,21 @@ namespace DXLog.net
             KstParsedLine parsed = KstTextParser.Parse(_settings.Callsign, line);
             if (parsed.Type == KstParsedType.User)
             {
-                UpsertUser(new KstUserInfo { Call = parsed.Call, Name = parsed.Name, Locator = parsed.Locator, Dirty = false });
+                KstUserInfo incoming = new KstUserInfo
+                {
+                    Call = parsed.Call,
+                    Name = parsed.Name,
+                    Locator = parsed.Locator,
+                    Dirty = false,
+                    MissedRefreshes = 0
+                };
+                string clean = CleanCall(incoming.Call);
+                if (_refreshingUserList && !String.IsNullOrWhiteSpace(clean))
+                    _pendingUserSnapshot[clean] = incoming;
+
+                // Merge rows as they arrive. The old list remains painted throughout
+                // the network request, so a slow or incomplete response cannot blank it.
+                UpsertUser(incoming);
                 return;
             }
 
@@ -1765,7 +2224,6 @@ namespace DXLog.net
 
             if (parsed.Type == KstParsedType.Prompt)
             {
-                _refreshingUserList = false;
                 CleanupUserList();
                 return;
             }
@@ -1774,23 +2232,80 @@ namespace DXLog.net
         private void CleanupUserList()
         {
             if (!_refreshingUserList) return;
-            _refreshingUserList = false;
-            List<string> remove = new List<string>();
-            foreach (KeyValuePair<string, KstUserInfo> kv in _userMap)
+
+            try { if (_users != null) _users.BeginUpdate(); } catch { }
+            try
             {
-                if (kv.Value.Dirty) remove.Add(kv.Key);
+                if (_pendingUserSnapshot.Count == 0)
+                {
+                    // A bare prompt, rate-limit response or interrupted transfer is not
+                    // evidence that the room is empty. Preserve every current row.
+                    UpdateStatus("KST returned no complete user list; keeping the existing list");
+                }
+                else
+                {
+                    List<string> remove = new List<string>();
+                    foreach (KeyValuePair<string, KstUserInfo> kv in _userMap)
+                    {
+                        if (_pendingUserSnapshot.ContainsKey(kv.Key))
+                        {
+                            kv.Value.MissedRefreshes = 0;
+                        }
+                        else
+                        {
+                            kv.Value.MissedRefreshes++;
+                            // Require three consecutive completed snapshots before
+                            // removing a station. This filters transient/partial KST replies.
+                            if (kv.Value.MissedRefreshes >= 3) remove.Add(kv.Key);
+                        }
+                    }
+                    foreach (string call in remove) RemoveUser(call);
+                    UpdateStatus("KST user list updated: " + _pendingUserSnapshot.Count.ToString() + " stations");
+                }
+
+                UpdateWorkedFlags();
+                SortUsers();
             }
-            foreach (string call in remove) RemoveUser(call);
-            SortUsers();
+            finally
+            {
+                _pendingUserSnapshot.Clear();
+                _refreshingUserList = false;
+                _userRefreshStartedUtc = DateTime.MinValue;
+                try { if (_users != null) _users.EndUpdate(); } catch { }
+            }
+
+            // Do not abort an AirScout pass simply because the normal /SH US
+            // refresh completed. A full room can take longer than the ten-second
+            // KST refresh period to scan. Finish the current pass, then rebuild
+            // the queue from the latest user snapshot.
+            RequestAirScoutRescanForLatestUsers();
+            RefreshMapWindow();
+
+            if (_forceUserRefreshAfterCurrent)
+            {
+                _forceUserRefreshAfterCurrent = false;
+                try
+                {
+                    BeginInvoke(new MethodInvoker(delegate { _ = RefreshUsersForBandChangeAsync(); }));
+                }
+                catch { }
+            }
         }
 
         private void AddChatMessage(KstParsedLine msg)
         {
             if (msg == null) return;
             if (!String.IsNullOrWhiteSpace(msg.Call) && !_userMap.ContainsKey(msg.Call))
-                UpsertUser(new KstUserInfo { Call = msg.Call, Name = msg.Name, Locator = "", Dirty = false });
+                UpsertUser(new KstUserInfo { Call = msg.Call, Name = msg.Name, Locator = "", Dirty = false, LastActivityUtc = DateTime.UtcNow });
+            KstUserInfo activeUser = null;
+            if (!String.IsNullOrWhiteSpace(msg.Call) && _userMap.TryGetValue(CleanCall(msg.Call), out activeUser))
+            {
+                activeUser.LastActivityUtc = DateTime.UtcNow;
+                UpdateUserInfoCells(activeUser.Call);
+                if (_userSortColumn == 6) SortUsers();
+            }
 
-            bool worked = IsWorkedBefore(msg.Call);
+            bool worked = activeUser != null && activeUser.WorkedCurrentBand;
             msg.Worked = worked;
             bool directToMe = IsDirectToMe(msg);
             ListViewItem item = CreateMessageItem(msg);
@@ -1910,6 +2425,11 @@ namespace DXLog.net
             {
                 if (String.IsNullOrWhiteSpace(user.Name)) user.Name = existing.Name;
                 if (String.IsNullOrWhiteSpace(user.Locator)) user.Locator = existing.Locator;
+                user.WorkedCurrentBand = existing.WorkedCurrentBand;
+                user.WorkedBandKey = existing.WorkedBandKey;
+                user.WorkedCheckComplete = existing.WorkedCheckComplete;
+                user.MissedRefreshes = existing.MissedRefreshes;
+                if (user.LastActivityUtc == DateTime.MinValue) user.LastActivityUtc = existing.LastActivityUtc;
             }
             _userMap[user.Call] = user;
 
@@ -1917,6 +2437,13 @@ namespace DXLog.net
             foreach (ListViewItem it in _users.Items)
             {
                 if (String.Equals(it.Text, user.Call, StringComparison.OrdinalIgnoreCase)) { item = it; break; }
+            }
+
+            if (!IsUserVisibleForCurrentFilter(user))
+            {
+                if (item != null) _users.Items.Remove(item);
+                if (!_refreshingUserList && !_rebuildingVisibleUserList) RefreshMapWindow();
+                return;
             }
 
             string qtf = "";
@@ -1931,6 +2458,8 @@ namespace DXLog.net
                 item.SubItems.Add(qtf);
                 item.SubItems.Add(qrb);
                 item.SubItems.Add(GetAirScoutDisplay(user.Call));
+                item.SubItems.Add(GetLastActiveDisplay(user));
+                item.SubItems.Add(GetWorkedBandsDisplay(user.Call));
                 item.Tag = user;
                 UpdateAirScoutItemToolTip(item);
                 StyleUserItem(item, user);
@@ -1942,14 +2471,20 @@ namespace DXLog.net
                 item.SubItems[2].Text = user.Locator ?? "";
                 item.SubItems[3].Text = qtf;
                 item.SubItems[4].Text = qrb;
-                while (item.SubItems.Count < 6) item.SubItems.Add("");
+                while (item.SubItems.Count < 8) item.SubItems.Add("");
                 item.SubItems[5].Text = GetAirScoutDisplay(user.Call);
+                item.SubItems[6].Text = GetLastActiveDisplay(user);
+                item.SubItems[7].Text = GetWorkedBandsDisplay(user.Call);
                 item.Tag = user;
                 UpdateAirScoutItemToolTip(item);
                 StyleUserItem(item, user);
             }
-            SortUsers();
-            RefreshMapWindow();
+            QueueWorkedCheck(user.Call);
+            if (!_refreshingUserList && !_rebuildingVisibleUserList)
+            {
+                SortUsers();
+                RefreshMapWindow();
+            }
         }
 
         private void RemoveUser(string call)
@@ -1965,7 +2500,7 @@ namespace DXLog.net
                     break;
                 }
             }
-            RefreshMapWindow();
+            if (!_refreshingUserList) RefreshMapWindow();
         }
 
         private void RecalculateAllUsers()
@@ -1980,7 +2515,10 @@ namespace DXLog.net
                 CalculateQtfQrb(user.Locator, out qtf, out qrb);
                 if (item.SubItems.Count > 3) item.SubItems[3].Text = qtf;
                 if (item.SubItems.Count > 4) item.SubItems[4].Text = qrb;
+                user.WorkedCurrentBand = IsWorkedBefore(user.Call);
+                UpdateUserInfoCells(item, user);
                 StyleUserItem(item, user);
+                UpdateAirScoutItemToolTip(item);
             }
             SortUsers();
             RefreshMapWindow();
@@ -1988,7 +2526,7 @@ namespace DXLog.net
 
         private void UsersColumnClick(object sender, ColumnClickEventArgs e)
         {
-            if (e.Column != 0 && e.Column != 2 && e.Column != 3 && e.Column != 4 && e.Column != 5) return;
+            if (e.Column != 0 && e.Column != 2 && e.Column != 3 && e.Column != 4 && e.Column != 5 && e.Column != 6 && e.Column != 7) return;
 
             if (_userSortColumn == e.Column)
                 _userSortOrder = (_userSortOrder == SortOrder.Ascending) ? SortOrder.Descending : SortOrder.Ascending;
@@ -2014,8 +2552,8 @@ namespace DXLog.net
 
         private void UpdateUserColumnHeaders()
         {
-            if (_users == null || _users.Columns.Count < 6) return;
-            string[] headers = new string[] { "Call", "Name", "Loc", "QTF", "QRB", "AS" };
+            if (_users == null || _users.Columns.Count < 8) return;
+            string[] headers = new string[] { "Call", "Name", "Loc", "QTF", "QRB", "AS", "Active", "Worked" };
             for (int i = 0; i < headers.Length; i++)
             {
                 string suffix = "";
@@ -2457,6 +2995,322 @@ namespace DXLog.net
             if (mi != null) mi.Invoke(_mainForm, new object[] { command, ucName, ctrlName });
         }
 
+        private string GetCurrentWorkedBandKey()
+        {
+            try
+            {
+                DxRadioSnapshot dx = GetDxRadioSnapshot();
+                string band = (dx.Band ?? "").Trim();
+                if (!String.IsNullOrWhiteSpace(band)) return band.ToUpperInvariant();
+                return dx.FrequencyText ?? "";
+            }
+            catch { return ""; }
+        }
+
+        private void QueueWorkedCheck(string call)
+        {
+            call = CleanCall(call);
+            if (String.IsNullOrWhiteSpace(call)) return;
+            KstUserInfo user;
+            if (!_userMap.TryGetValue(call, out user) || user == null) return;
+            string bandKey = GetCurrentWorkedBandKey();
+            if (user.WorkedCheckComplete && String.Equals(user.WorkedBandKey, bandKey, StringComparison.OrdinalIgnoreCase)) return;
+            if (_workedCheckQueuedCalls.Add(call)) _workedCheckQueue.Enqueue(call);
+            if (_workedCheckTimer != null && !_workedCheckTimer.Enabled) _workedCheckTimer.Start();
+        }
+
+        private void QueueWorkedChecksForAll(bool invalidateExisting)
+        {
+            if (invalidateExisting)
+            {
+                _workedCheckQueue.Clear();
+                _workedCheckQueuedCalls.Clear();
+                foreach (KstUserInfo user in _userMap.Values)
+                {
+                    user.WorkedCheckComplete = false;
+                    user.WorkedBandKey = "";
+                }
+            }
+
+            foreach (string call in _userMap.Keys) QueueWorkedCheck(call);
+        }
+
+        private void ProcessNextWorkedCheck()
+        {
+            if (_workedCheckQueue.Count == 0)
+            {
+                if (_workedCheckTimer != null) _workedCheckTimer.Stop();
+                return;
+            }
+
+            string call = _workedCheckQueue.Dequeue();
+            _workedCheckQueuedCalls.Remove(call);
+            KstUserInfo user;
+            if (!_userMap.TryGetValue(call, out user) || user == null) return;
+
+            string bandKey = GetCurrentWorkedBandKey();
+            bool oldWorked = user.WorkedCurrentBand;
+            bool worked = IsWorkedBefore(call);
+            user.WorkedCurrentBand = worked;
+            user.WorkedBandKey = bandKey;
+            user.WorkedCheckComplete = true;
+            if (oldWorked != worked) UpdateMessagesForCallWorked(call, worked);
+
+            ListViewItem item = FindUserItem(call);
+            if (item != null)
+            {
+                StyleUserItem(item, user);
+                UpdateUserInfoCells(item, user);
+            }
+
+            if (_workedCheckQueue.Count == 0 && _workedCheckTimer != null) _workedCheckTimer.Stop();
+        }
+
+        private ListViewItem FindUserItem(string call)
+        {
+            if (_users == null || String.IsNullOrWhiteSpace(call)) return null;
+            string clean = CleanCall(call);
+            foreach (ListViewItem item in _users.Items)
+                if (String.Equals(CleanCall(item.Text), clean, StringComparison.OrdinalIgnoreCase)) return item;
+            return null;
+        }
+
+        private void UpdateMessagesForCallWorked(string call, bool worked)
+        {
+            UpdateMessagesForCallWorked(_messages, call, worked);
+            UpdateMessagesForCallWorked(_threadMessages, call, worked);
+        }
+
+        private void UpdateMessagesForCallWorked(ListView list, string call, bool worked)
+        {
+            if (list == null || String.IsNullOrWhiteSpace(call)) return;
+            string clean = CleanCall(call);
+            foreach (ListViewItem item in list.Items)
+            {
+                KstParsedLine msg = item.Tag as KstParsedLine;
+                if (msg == null) continue;
+                string other = GetOtherPartyForMessage(msg);
+                if (String.IsNullOrWhiteSpace(other)) other = msg.Call;
+                if (!String.Equals(CleanCall(other), clean, StringComparison.OrdinalIgnoreCase)) continue;
+                msg.Worked = worked;
+                StyleMessageItem(item, msg, worked);
+            }
+            list.Invalidate();
+        }
+
+        private void UpdateWorkedFlags()
+        {
+            // Kept as a compatibility entry point for the existing event handlers.
+            // Checks are queued and throttled rather than running a whole-room log
+            // search synchronously on the DXLog UI thread.
+            QueueWorkedChecksForAll(false);
+        }
+
+        private void RememberWorkedBand(object qso)
+        {
+            if (qso == null) return;
+            try
+            {
+                string call = CleanCall(ReadPropertyText(qso, "Call", "Callsign", "QSOCall", "StationCallsign"));
+                string band = NormalizeBandText(ReadPropertyText(qso, "Band", "BandName", "QsoBand"));
+                if (String.IsNullOrWhiteSpace(call) || String.IsNullOrWhiteSpace(band)) return;
+
+                HashSet<string> bands;
+                if (!_workedBandsByCall.TryGetValue(call, out bands))
+                {
+                    bands = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    _workedBandsByCall[call] = bands;
+                }
+                bands.Add(band);
+
+                KstUserInfo user;
+                if (_userMap.TryGetValue(call, out user) && user != null)
+                {
+                    user.WorkedCurrentBand = true;
+                    user.WorkedBandKey = GetCurrentWorkedBandKey();
+                    user.WorkedCheckComplete = true;
+                    ListViewItem item = FindUserItem(call);
+                    if (item != null)
+                    {
+                        StyleUserItem(item, user);
+                        UpdateUserInfoCells(item, user);
+                    }
+                }
+                UpdateUserRowToolTip(call);
+                if (_userSortColumn == 7) SortUsers();
+                RefreshConversationView();
+            }
+            catch { }
+        }
+
+        private void BeginBuildWorkedBandIndex()
+        {
+            if (_workedBandIndexBuildStarted || _contestData == null) return;
+            _workedBandIndexBuildStarted = true;
+            _workedBandIndexStatus = "Reading worked bands from DXLog log";
+
+            object contestDataSnapshot = _contestData;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                Dictionary<string, HashSet<string>> result = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+                string status;
+                try
+                {
+                    HashSet<object> visited = new HashSet<object>(ReferenceObjectComparer.Instance);
+                    CollectQsoBandsFromObject(contestDataSnapshot, result, 3, visited);
+                    status = result.Count > 0
+                        ? "Worked-band index loaded for " + result.Count.ToString() + " calls"
+                        : "DXLog worked-band collection was not exposed; tracking new QSOs only";
+                }
+                catch (Exception ex)
+                {
+                    status = "Worked-band index unavailable: " + ex.Message;
+                }
+
+                SafeUi(delegate
+                {
+                    foreach (KeyValuePair<string, HashSet<string>> kv in result)
+                    {
+                        HashSet<string> target;
+                        if (!_workedBandsByCall.TryGetValue(kv.Key, out target))
+                        {
+                            target = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            _workedBandsByCall[kv.Key] = target;
+                        }
+                        foreach (string band in kv.Value) target.Add(band);
+                    }
+                    _workedBandIndexComplete = result.Count > 0;
+                    _workedBandIndexStatus = status;
+                    UpdateAllUserInfoCells();
+                    if (_userSortColumn == 7) SortUsers();
+                    RefreshConversationView();
+                });
+            });
+        }
+
+        private static void CollectQsoBandsFromObject(object value, Dictionary<string, HashSet<string>> result, int depth, HashSet<object> visited)
+        {
+            if (value == null || depth < 0 || result == null || visited == null) return;
+            Type type = value.GetType();
+            if (IsSimpleReflectionType(type)) return;
+            if (!visited.Add(value)) return;
+
+            IEnumerable enumerable = value as IEnumerable;
+            if (enumerable != null)
+            {
+                int count = 0;
+                try
+                {
+                    foreach (object item in enumerable)
+                    {
+                        if (item == null) continue;
+                        AddQsoBandFromObject(item, result);
+                        if (depth > 0 && String.IsNullOrWhiteSpace(ReadPropertyText(item, "Call", "Callsign", "QSOCall", "StationCallsign")))
+                            CollectQsoBandsFromObject(item, result, depth - 1, visited);
+                        if (++count >= 200000) break;
+                    }
+                }
+                catch { }
+                return;
+            }
+
+            BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            foreach (PropertyInfo property in type.GetProperties(flags))
+            {
+                if (property.GetIndexParameters().Length != 0 || !LooksLikeLogMember(property.Name)) continue;
+                try
+                {
+                    object child = property.GetValue(value, null);
+                    CollectQsoBandsFromObject(child, result, depth - 1, visited);
+                }
+                catch { }
+            }
+            foreach (FieldInfo field in type.GetFields(flags))
+            {
+                if (!LooksLikeLogMember(field.Name)) continue;
+                try
+                {
+                    object child = field.GetValue(value);
+                    CollectQsoBandsFromObject(child, result, depth - 1, visited);
+                }
+                catch { }
+            }
+        }
+
+        private static void AddQsoBandFromObject(object qso, Dictionary<string, HashSet<string>> result)
+        {
+            string call = CleanCall(ReadPropertyText(qso, "Call", "Callsign", "QSOCall", "StationCallsign"));
+            string band = NormalizeBandText(ReadPropertyText(qso, "Band", "BandName", "QsoBand"));
+            if (String.IsNullOrWhiteSpace(call) || String.IsNullOrWhiteSpace(band)) return;
+            HashSet<string> bands;
+            if (!result.TryGetValue(call, out bands))
+            {
+                bands = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                result[call] = bands;
+            }
+            bands.Add(band);
+        }
+
+        private static bool LooksLikeLogMember(string name)
+        {
+            if (String.IsNullOrWhiteSpace(name)) return false;
+            string n = name.ToLowerInvariant();
+            return n.Contains("qso") || n.Contains("log") || n.Contains("contact");
+        }
+
+        private static bool IsSimpleReflectionType(Type type)
+        {
+            if (type == null) return true;
+            return type.IsPrimitive || type.IsEnum || type == typeof(string) || type == typeof(decimal) ||
+                   type == typeof(DateTime) || type == typeof(TimeSpan) || type == typeof(Guid);
+        }
+
+        private static string NormalizeBandText(string band)
+        {
+            if (String.IsNullOrWhiteSpace(band)) return "";
+            band = band.Trim();
+            if (band.StartsWith("B", StringComparison.OrdinalIgnoreCase) && band.Length > 1 && Char.IsDigit(band[1]))
+                band = band.Substring(1);
+            return band.Replace("MHz", "").Replace("mhz", "").Trim();
+        }
+
+        private void UpdateAllUserToolTips()
+        {
+            UpdateAllUserInfoCells();
+        }
+
+        private void UpdateAllUserInfoCells()
+        {
+            if (_users == null) return;
+            foreach (ListViewItem item in _users.Items) UpdateUserInfoCells(item, item.Tag as KstUserInfo);
+        }
+
+        private static string ReadPropertyText(object value, params string[] names)
+        {
+            if (value == null || names == null) return "";
+            Type t = value.GetType();
+            foreach (string name in names)
+            {
+                try
+                {
+                    PropertyInfo pi = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                    if (pi != null)
+                    {
+                        object v = pi.GetValue(value, null);
+                        if (v != null) return Convert.ToString(v);
+                    }
+                    FieldInfo fi = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                    if (fi != null)
+                    {
+                        object v = fi.GetValue(value);
+                        if (v != null) return Convert.ToString(v);
+                    }
+                }
+                catch { }
+            }
+            return "";
+        }
+
         private bool IsWorkedBefore(string call)
         {
             if (_contestData == null || _mainForm == null || String.IsNullOrWhiteSpace(call)) return false;
@@ -2511,7 +3365,8 @@ namespace DXLog.net
                     // Re-check all visible calls against the DXLog log immediately,
                     // then request a fresh ON4KST user list so the user/map panes
                     // reflect the latest worked status without waiting 10 seconds.
-                    RestyleUsers();
+                    RememberWorkedBand(newQso);
+                    UpdateWorkedFlags();
                     RecheckMessageWorkedState();
                     RefreshConversationView();
                     RefreshMapWindow();
@@ -2535,7 +3390,7 @@ namespace DXLog.net
             try
             {
                 RecheckMessageWorkedState();
-                RestyleUsers();
+                UpdateWorkedFlags();
                 RestyleMessages();
                 RestyleThreadMessages();
                 RefreshConversationView();
@@ -2558,26 +3413,24 @@ namespace DXLog.net
         {
             try
             {
-                if (_messages != null)
-                {
-                    foreach (ListViewItem item in _messages.Items)
-                    {
-                        KstParsedLine msg = item.Tag as KstParsedLine;
-                        if (msg == null || String.IsNullOrWhiteSpace(msg.Call)) continue;
-                        msg.Worked = IsWorkedBefore(msg.Call);
-                    }
-                }
-                if (_threadMessages != null)
-                {
-                    foreach (ListViewItem item in _threadMessages.Items)
-                    {
-                        KstParsedLine msg = item.Tag as KstParsedLine;
-                        if (msg == null || String.IsNullOrWhiteSpace(msg.Call)) continue;
-                        msg.Worked = IsWorkedBefore(msg.Call);
-                    }
-                }
+                UpdateMessageWorkedStateFromCache(_messages);
+                UpdateMessageWorkedStateFromCache(_threadMessages);
             }
             catch { }
+        }
+
+        private void UpdateMessageWorkedStateFromCache(ListView list)
+        {
+            if (list == null) return;
+            foreach (ListViewItem item in list.Items)
+            {
+                KstParsedLine msg = item.Tag as KstParsedLine;
+                if (msg == null) continue;
+                string call = GetOtherPartyForMessage(msg);
+                if (String.IsNullOrWhiteSpace(call)) call = msg.Call;
+                KstUserInfo user;
+                msg.Worked = _userMap.TryGetValue(CleanCall(call), out user) && user != null && user.WorkedCurrentBand;
+            }
         }
 
         private void HandleDxLogFocusChanged()
@@ -2585,21 +3438,29 @@ namespace DXLog.net
             SafeUi(delegate
             {
                 UpdateStatus("DXLog radio " + (_contestData != null ? _contestData.FocusedRadio.ToString() : "?") + " | KST " + KstRoomTitles.GetTitle(_settings.Room) + " " + (_kst != null && _kst.IsConnected ? "connected" : "not connected"));
+                QueueWorkedChecksForAll(true);
                 _airScoutResults.Clear();
                 RefreshAllAirScoutCells();
                 ResetAirScoutAutoScan(true);
                 QuerySelectedUserInAirScout(true);
+                ForceBandChangeUserAndMapRefresh();
             });
         }
 
         private void UsersSelectedIndexChanged()
         {
+            string previous = _lastStyledUserCall;
+            string current = "";
             if (_users != null && _users.SelectedItems.Count > 0)
             {
-                _lastSelectedCall = _users.SelectedItems[0].Text;
+                current = _users.SelectedItems[0].Text;
+                _lastSelectedCall = current;
                 QuerySelectedUserInAirScout(true);
             }
-            RestyleUsers();
+            _lastStyledUserCall = current;
+            RestyleUserCall(previous);
+            RestyleUserCall(current);
+            UpdateComposeTarget();
             RefreshConversationView();
             RefreshMapWindow();
         }
@@ -2684,11 +3545,12 @@ namespace DXLog.net
                     _airScoutPendingAutoSinceUtc = DateTime.MinValue;
                     _airScoutScanCompleted++;
                     if (_airScoutScanCompleted > _airScoutScanTotal) _airScoutScanCompleted = _airScoutScanTotal;
-                    if (_airScoutScanQueue.Count == 0) _lastAirScoutFullScanUtc = DateTime.UtcNow;
+                    if (_airScoutScanQueue.Count == 0 && !_airScoutRescanRequested)
+                        _lastAirScoutFullScanUtc = DateTime.UtcNow;
                 }
                 UpdateAirScoutRow(call);
                 UpdateAirScoutStatusLabel();
-                RefreshMapWindow();
+                if (String.Equals(call, CleanCall(_lastSelectedCall), StringComparison.OrdinalIgnoreCase)) RefreshMapAircraftOnly();
             });
         }
 
@@ -2731,7 +3593,45 @@ namespace DXLog.net
             _airScoutScanTotal = 0;
             _airScoutScanCompleted = 0;
             _airScoutAutoScanQrg = GetAirScoutFrequency100Hz();
+            _airScoutRescanRequested = false;
             _lastAirScoutFullScanUtc = startImmediately ? DateTime.MinValue : DateTime.UtcNow;
+        }
+
+        private void RequestAirScoutRescan(bool startImmediately)
+        {
+            bool passInProgress = !String.IsNullOrWhiteSpace(_airScoutPendingAutoCall) || _airScoutScanQueue.Count > 0;
+            if (passInProgress)
+            {
+                _airScoutRescanRequested = true;
+                if (startImmediately) _lastAirScoutFullScanUtc = DateTime.MinValue;
+                return;
+            }
+
+            ResetAirScoutAutoScan(startImmediately);
+        }
+
+        private void RequestAirScoutRescanForLatestUsers()
+        {
+            string signature = GetAirScoutUserSnapshotSignature();
+            if (String.Equals(signature, _airScoutUserSnapshotSignature, StringComparison.Ordinal)) return;
+            _airScoutUserSnapshotSignature = signature;
+            RequestAirScoutRescan(true);
+        }
+
+        private string GetAirScoutUserSnapshotSignature()
+        {
+            if (_users == null) return "";
+            List<string> entries = new List<string>();
+            foreach (ListViewItem item in _users.Items)
+            {
+                KstUserInfo user = item.Tag as KstUserInfo;
+                string call = CleanCall(item.Text);
+                string locator = NormalizeLocator(user != null ? user.Locator : "");
+                if (String.IsNullOrWhiteSpace(call) || !IsValidLocator(locator)) continue;
+                entries.Add(call + "|" + locator);
+            }
+            entries.Sort(StringComparer.OrdinalIgnoreCase);
+            return String.Join(";", entries.ToArray());
         }
 
         private void BuildAirScoutAutoScanQueue()
@@ -2741,6 +3641,7 @@ namespace DXLog.net
             _airScoutScanCompleted = 0;
             _airScoutScanTotal = 0;
             _airScoutAutoScanQrg = GetAirScoutFrequency100Hz();
+            _airScoutRescanRequested = false;
 
             if (_users == null || _settings == null || !_settings.AirScoutEnabled) return;
 
@@ -2753,6 +3654,7 @@ namespace DXLog.net
                 if (_airScoutScanQueuedCalls.Add(call)) _airScoutScanQueue.Enqueue(call);
             }
             _airScoutScanTotal = _airScoutScanQueue.Count;
+            _airScoutUserSnapshotSignature = GetAirScoutUserSnapshotSignature();
         }
 
         private void RunAirScoutAutoScanTick()
@@ -2763,16 +3665,21 @@ namespace DXLog.net
             if (qrg <= 0) return;
             if (_airScoutAutoScanQrg != 0 && qrg != _airScoutAutoScanQrg)
             {
-                // Results are band-specific. Clear the old band immediately and rescan.
+                // AirScout results and DXLog worked state are band-specific.
+                // Start a clean scan and force both the KST user snapshot and map
+                // to refresh immediately when the operating band changes.
                 _airScoutResults.Clear();
                 RefreshAllAirScoutCells();
                 ResetAirScoutAutoScan(true);
+                QueueWorkedChecksForAll(true);
+                QuerySelectedUserInAirScout(true);
+                ForceBandChangeUserAndMapRefresh();
             }
 
             if (!String.IsNullOrWhiteSpace(_airScoutPendingAutoCall))
             {
-                // ASNEAREST normally arrives almost immediately. After two seconds,
-                // move on so one bad path can never stall the whole KST list.
+                // Wait for the reply belonging to the current queue item. If none
+                // arrives, skip it after two seconds and continue the same pass.
                 if (DateTime.UtcNow - _airScoutPendingAutoSinceUtc < TimeSpan.FromSeconds(2)) return;
                 _airScoutPendingAutoCall = "";
                 _airScoutPendingAutoSinceUtc = DateTime.MinValue;
@@ -2782,14 +3689,28 @@ namespace DXLog.net
 
             if (_airScoutScanQueue.Count == 0)
             {
-                if (_airScoutScanTotal > 0 && _airScoutScanCompleted >= _airScoutScanTotal)
+                bool completedPass = _airScoutScanTotal > 0 && _airScoutScanCompleted >= _airScoutScanTotal;
+                if (completedPass)
                 {
-                    if (_lastAirScoutFullScanUtc == DateTime.MinValue) _lastAirScoutFullScanUtc = DateTime.UtcNow;
-                    // Refresh the complete room periodically. New/changed KST users are
-                    // also picked up automatically on the next cycle.
-                    if (DateTime.UtcNow - _lastAirScoutFullScanUtc < TimeSpan.FromSeconds(20)) return;
+                    if (_airScoutRescanRequested)
+                    {
+                        // A KST refresh changed the visible user set while this pass
+                        // was running. Accept the new snapshot only now, after all
+                        // entries in the old pass have completed or timed out.
+                        BuildAirScoutAutoScanQueue();
+                    }
+                    else
+                    {
+                        if (_lastAirScoutFullScanUtc == DateTime.MinValue) _lastAirScoutFullScanUtc = DateTime.UtcNow;
+                        if (DateTime.UtcNow - _lastAirScoutFullScanUtc < TimeSpan.FromSeconds(20)) return;
+                        BuildAirScoutAutoScanQueue();
+                    }
                 }
-                BuildAirScoutAutoScanQueue();
+                else
+                {
+                    BuildAirScoutAutoScanQueue();
+                }
+
                 if (_airScoutScanQueue.Count == 0) return;
                 _lastAirScoutFullScanUtc = DateTime.MinValue;
             }
@@ -2805,6 +3726,44 @@ namespace DXLog.net
             _airScoutPendingAutoCall = callToQuery;
             _airScoutPendingAutoSinceUtc = DateTime.UtcNow;
             QueryCallInAirScout(callToQuery, false, false);
+        }
+
+        private void ForceBandChangeUserAndMapRefresh()
+        {
+            RefreshMapWindow();
+
+            if (_kst == null || !_kst.IsConnected) return;
+            if (_refreshingUserList)
+            {
+                _forceUserRefreshAfterCurrent = true;
+                return;
+            }
+
+            _ = RefreshUsersForBandChangeAsync();
+        }
+
+        private async Task RefreshUsersForBandChangeAsync()
+        {
+            if (_bandChangeRefreshRunning) return;
+            _bandChangeRefreshRunning = true;
+            try
+            {
+                if (_kst == null || !_kst.IsConnected) return;
+                if (_refreshingUserList)
+                {
+                    _forceUserRefreshAfterCurrent = true;
+                    return;
+                }
+
+                UpdateStatus("Band changed - refreshing KST users and map");
+                RefreshMapWindow();
+                await RefreshUsers();
+            }
+            catch { }
+            finally
+            {
+                _bandChangeRefreshRunning = false;
+            }
         }
 
         private bool CanQueryAirScoutForCall(string call)
@@ -2925,7 +3884,7 @@ namespace DXLog.net
             if (_users == null) return;
             foreach (ListViewItem item in _users.Items)
             {
-                while (item.SubItems.Count < 6) item.SubItems.Add("");
+                while (item.SubItems.Count < 8) item.SubItems.Add("");
                 item.SubItems[5].Text = GetAirScoutDisplay(item.Text);
                 UpdateAirScoutItemToolTip(item);
             }
@@ -2937,35 +3896,117 @@ namespace DXLog.net
             foreach (ListViewItem item in _users.Items)
             {
                 if (!String.Equals(CleanCall(item.Text), CleanCall(call), StringComparison.OrdinalIgnoreCase)) continue;
-                while (item.SubItems.Count < 6) item.SubItems.Add("");
+                while (item.SubItems.Count < 8) item.SubItems.Add("");
                 item.SubItems[5].Text = GetAirScoutDisplay(call);
                 UpdateAirScoutItemToolTip(item);
                 break;
             }
         }
 
+        private void UpdateUserRowToolTip(string call)
+        {
+            UpdateUserInfoCells(call);
+        }
+
+        private void UpdateUserInfoCells(string call)
+        {
+            if (_users == null || String.IsNullOrWhiteSpace(call)) return;
+            ListViewItem item = FindUserItem(call);
+            if (item == null) return;
+            UpdateUserInfoCells(item, item.Tag as KstUserInfo);
+        }
+
+        private void UpdateUserInfoCells(ListViewItem item, KstUserInfo user)
+        {
+            if (item == null) return;
+            while (item.SubItems.Count < 8) item.SubItems.Add("");
+            item.SubItems[6].Text = GetLastActiveDisplay(user);
+            item.SubItems[7].Text = GetWorkedBandsDisplay(item.Text);
+            UpdateAirScoutItemToolTip(item);
+            try { if (_users != null) _users.Invalidate(item.Bounds); } catch { }
+        }
+
+        private static string GetLastActiveDisplay(KstUserInfo user)
+        {
+            return user == null || user.LastActivityUtc == DateTime.MinValue
+                ? "--"
+                : user.LastActivityUtc.ToString("HHmm");
+        }
+
+        private string GetWorkedBandsDisplay(string call)
+        {
+            HashSet<string> bands;
+            if (!_workedBandsByCall.TryGetValue(CleanCall(call), out bands) || bands == null || bands.Count == 0)
+                return "--";
+
+            List<string> sorted = new List<string>(bands);
+            sorted.Sort(CompareBandLabels);
+            return String.Join(",", sorted.ToArray());
+        }
+
+        private static int CompareBandLabels(string a, string b)
+        {
+            double av = BandSortValue(a);
+            double bv = BandSortValue(b);
+            int result = av.CompareTo(bv);
+            return result != 0 ? result : String.Compare(a, b, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static double BandSortValue(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value)) return Double.MaxValue;
+            string text = value.Trim().ToLowerInvariant().Replace("mhz", "").Replace("ghz", "");
+            double number;
+            if (!Double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out number))
+                return Double.MaxValue;
+            // DXLog normally supplies MHz. Decimal values below 20 are commonly GHz.
+            return number > 0 && number < 20 ? number * 1000.0 : number;
+        }
+
         private void UpdateAirScoutItemToolTip(ListViewItem item)
         {
-            if (item == null)
-                return;
+            if (item == null) return;
+            StringBuilder tip = new StringBuilder();
+            KstUserInfo user = item.Tag as KstUserInfo;
+            string call = CleanCall(item.Text);
+            tip.Append(call);
+            if (user != null)
+            {
+                if (!String.IsNullOrWhiteSpace(user.Name)) tip.Append("  ").Append(user.Name);
+                if (!String.IsNullOrWhiteSpace(user.Locator)) tip.AppendLine().Append("Locator: ").Append(user.Locator);
+                if (user.LastActivityUtc != DateTime.MinValue)
+                    tip.AppendLine().Append("Last KST message seen this session: ").Append(user.LastActivityUtc.ToString("HH:mm:ss")).Append(" UTC");
+                else
+                    tip.AppendLine().Append("Last KST message seen this session: none");
+                tip.AppendLine().Append("Worked on current DXLog band: ").Append(user.WorkedCurrentBand ? "Yes" : "No");
+            }
+            HashSet<string> bands;
+            if (_workedBandsByCall.TryGetValue(call, out bands) && bands.Count > 0)
+            {
+                List<string> sortedBands = new List<string>(bands);
+                sortedBands.Sort(StringComparer.OrdinalIgnoreCase);
+                tip.AppendLine().Append("Worked bands: ").Append(String.Join(", ", sortedBands.ToArray()));
+            }
+
             AirScoutPathResult result;
-            if (!_airScoutResults.TryGetValue(CleanCall(item.Text), out result) || result == null)
+            if (_airScoutResults.TryGetValue(call, out result) && result != null)
             {
-                item.ToolTipText = "";
-                return;
+                AirScoutPlaneInfo best = result.GetBestPlane();
+                if (best == null)
+                {
+                    tip.AppendLine().Append("AirScout: no suitable aircraft reported");
+                }
+                else
+                {
+                    string opportunity = best.Mins <= 0 ? "now" : "in " + best.Mins.ToString() + " min";
+                    tip.AppendLine().Append("AirScout aircraft: ").Append(best.Call);
+                    if (!String.IsNullOrWhiteSpace(best.Category)) tip.Append(" (").Append(best.Category).Append(")");
+                    tip.AppendLine().Append("Opportunity: ").Append(opportunity);
+                    tip.AppendLine().Append("Potential: ").Append(best.Potential.ToString());
+                    tip.AppendLine().Append("Intersection QRB: ").Append(best.IntQRB.ToString()).Append(" km");
+                }
             }
-            AirScoutPlaneInfo best = result.GetBestPlane();
-            if (best == null)
-            {
-                item.ToolTipText = "AirScout: no suitable aircraft reported for " + item.Text;
-                return;
-            }
-            string opportunity = best.Mins <= 0 ? "now" : "in " + best.Mins.ToString() + " min";
-            item.ToolTipText = "AirScout " + item.Text + Environment.NewLine +
-                "Aircraft: " + best.Call + (String.IsNullOrWhiteSpace(best.Category) ? "" : " (" + best.Category + ")") + Environment.NewLine +
-                "Opportunity: " + opportunity + Environment.NewLine +
-                "Potential: " + best.Potential.ToString() + Environment.NewLine +
-                "Intersection QRB: " + best.IntQRB.ToString() + " km";
+            item.ToolTipText = tip.ToString();
         }
 
         private void SetConnectionUi(bool connected)
@@ -2974,6 +4015,7 @@ namespace DXLog.net
             _disconnectButton.Enabled = connected;
             _sendButton.Enabled = connected;
             _cqButton.Enabled = connected;
+            if (_composeBox != null) _composeBox.Enabled = connected;
             if (_macroButtons != null)
             {
                 foreach (Button b in _macroButtons) if (b != null) b.Enabled = connected;
@@ -2985,8 +4027,7 @@ namespace DXLog.net
             if (_userBox != null) _userBox.Enabled = !connected;
             if (_passBox != null) _passBox.Enabled = !connected;
             // Room switching is allowed while connected; it reconnects automatically.
-            if (_roomButton != null) _roomButton.Enabled = true;
-            if (_roomTitleBox != null) _roomTitleBox.Enabled = true;
+            if (_roomCombo != null) _roomCombo.Enabled = true;
         }
 
         private void UpdateStatus(string text)
@@ -3044,7 +4085,7 @@ namespace DXLog.net
                         int unique = new HashSet<AirScoutLivePlane>(_airScoutPlaneById.Values).Count;
                         _airScoutPlaneFeedStatus = unique.ToString() + " live aircraft";
                     }
-                    SafeUi(delegate { RefreshMapWindow(); });
+                    SafeUi(delegate { RefreshMapAircraftOnly(); });
                 }
                 catch (Exception ex)
                 {
@@ -3053,7 +4094,7 @@ namespace DXLog.net
                         _lastAirScoutPlaneFetchUtc = DateTime.UtcNow;
                         _airScoutPlaneFeedStatus = "Aircraft feed: " + ex.Message;
                     }
-                    SafeUi(delegate { RefreshMapWindow(); });
+                    SafeUi(delegate { RefreshMapAircraftOnly(); });
                 }
                 finally
                 {
@@ -3223,6 +4264,16 @@ namespace DXLog.net
             catch { }
         }
 
+        private void RefreshMapAircraftOnly()
+        {
+            try
+            {
+                if (_mapForm != null && !_mapForm.IsDisposed)
+                    _mapForm.RefreshAircraftOnly();
+            }
+            catch { }
+        }
+
         private List<KstMapStation> GetMapStationsSnapshot()
         {
             List<KstMapStation> result = new List<KstMapStation>();
@@ -3230,7 +4281,7 @@ namespace DXLog.net
             {
                 foreach (KstUserInfo user in _userMap.Values)
                 {
-                    if (user == null || String.IsNullOrWhiteSpace(user.Call) || !IsValidLocator(user.Locator)) continue;
+                    if (user == null || !IsUserVisibleForCurrentFilter(user) || String.IsNullOrWhiteSpace(user.Call) || !IsValidLocator(user.Locator)) continue;
                     string qtf;
                     string qrb;
                     CalculateQtfQrb(user.Locator, out qtf, out qrb);
@@ -3244,7 +4295,8 @@ namespace DXLog.net
                         Lon = pos.Lon,
                         Qtf = qtf,
                         Qrb = qrb,
-                        Worked = IsWorkedBefore(user.Call),
+                        Worked = user.WorkedCurrentBand,
+                        IsActive = user.LastActivityUtc != DateTime.MinValue,
                         IsSelected = String.Equals(CleanCall(user.Call), CleanCall(_lastSelectedCall), StringComparison.OrdinalIgnoreCase)
                     });
                 }
@@ -3272,6 +4324,7 @@ namespace DXLog.net
                     Qtf = "0°",
                     Qrb = "0 km",
                     Worked = false,
+                    IsActive = true,
                     IsSelected = false
                 };
                 return true;
@@ -3420,6 +4473,7 @@ namespace DXLog.net
             public string Qtf;
             public string Qrb;
             public bool Worked;
+            public bool IsActive;
             public bool IsSelected;
         }
 
@@ -3512,7 +4566,7 @@ namespace DXLog.net
 
                 _refreshTimer = new System.Windows.Forms.Timer();
                 _refreshTimer.Interval = 5000;
-                _refreshTimer.Tick += delegate { RefreshStations(); };
+                _refreshTimer.Tick += delegate { RefreshAircraftOnly(); };
                 _refreshTimer.Start();
             }
 
@@ -3614,13 +4668,68 @@ namespace DXLog.net
                     else
                         _canvas.Aircraft = new List<KstMapAircraft>();
 
-                    _canvas.Invalidate();
+                    _canvas.SceneChanged();
                     if (_canvas.SelectedStation != null && _showAirScout.Checked)
                         _status.Text = _canvas.SelectedStation.Call + " path - " + _canvas.Aircraft.Count.ToString() + " matched aircraft - " + _owner.GetAirScoutPlaneFeedStatus();
                     else
                         _status.Text = _canvas.Stations.Count.ToString() + " stations with valid locators";
                 }
                 catch { }
+            }
+
+            public void RefreshAircraftOnly()
+            {
+                try
+                {
+                    // Refresh active/inactive colours from the current KST-session
+                    // timestamps, but rebuild the cached map only when a colour has
+                    // actually changed. This keeps activity indication responsive
+                    // without returning to full five-second map redraws.
+                    List<KstMapStation> latestStations = _owner.GetMapStationsSnapshot();
+                    bool stationColoursChanged = ActivityStateChanged(_canvas.Stations, latestStations);
+                    if (stationColoursChanged)
+                    {
+                        _canvas.Stations = latestStations;
+                        _canvas.SelectedStation = null;
+                        foreach (KstMapStation station in latestStations)
+                        {
+                            if (station != null && station.IsSelected) { _canvas.SelectedStation = station; break; }
+                        }
+                    }
+
+                    if (_showAirScout.Checked)
+                    {
+                        _owner.BeginRefreshAirScoutLivePlanes(false);
+                        _canvas.Aircraft = _owner.GetSelectedAirScoutAircraftSnapshot();
+                    }
+                    else
+                        _canvas.Aircraft = new List<KstMapAircraft>();
+
+                    if (stationColoursChanged) _canvas.SceneChanged();
+                    else _canvas.AircraftChanged();
+
+                    if (_canvas.SelectedStation != null && _showAirScout.Checked)
+                        _status.Text = _canvas.SelectedStation.Call + " path - " + _canvas.Aircraft.Count.ToString() + " matched aircraft - " + _owner.GetAirScoutPlaneFeedStatus();
+                }
+                catch { }
+            }
+
+            private static bool ActivityStateChanged(List<KstMapStation> current, List<KstMapStation> latest)
+            {
+                if (current == null || latest == null || current.Count != latest.Count) return true;
+                Dictionary<string, KstMapStation> byCall = new Dictionary<string, KstMapStation>(StringComparer.OrdinalIgnoreCase);
+                foreach (KstMapStation station in current)
+                {
+                    if (station != null && !String.IsNullOrWhiteSpace(station.Call)) byCall[station.Call] = station;
+                }
+                foreach (KstMapStation station in latest)
+                {
+                    if (station == null || String.IsNullOrWhiteSpace(station.Call)) return true;
+                    KstMapStation old;
+                    if (!byCall.TryGetValue(station.Call, out old)) return true;
+                    if (old.IsActive != station.IsActive || old.Worked != station.Worked || old.IsSelected != station.IsSelected) return true;
+                }
+                return false;
             }
 
             private void UpdateZoomStatus()
@@ -3658,6 +4767,12 @@ namespace DXLog.net
             private Point _dragStart;
             private double _dragStartCenterX;
             private double _dragStartCenterY;
+            private Point _dragOffset = Point.Empty;
+            private bool _panCommitPending;
+            private Bitmap _baseFrame;
+            private bool _baseFrameDirty = true;
+            private List<RectangleF> _staticLabelBounds = new List<RectangleF>();
+            private readonly System.Windows.Forms.Timer _frameRebuildTimer;
 
             private readonly Dictionary<string, Image> _tileImages = new Dictionary<string, Image>();
             private readonly HashSet<string> _tileDownloads = new HashSet<string>();
@@ -3672,7 +4787,9 @@ namespace DXLog.net
             public KstMapCanvas(KstChatBridge owner)
             {
                 _owner = owner;
+                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
                 DoubleBuffered = true;
+                ResizeRedraw = true;
                 BackColor = Color.FromArgb(218, 235, 243);
                 TabStop = true;
                 Cursor = Cursors.Hand;
@@ -3681,6 +4798,50 @@ namespace DXLog.net
                 MouseUp += CanvasMouseUp;
                 MouseEnter += delegate { try { Focus(); } catch { } };
                 MouseWheel += CanvasMouseWheel;
+                _frameRebuildTimer = new System.Windows.Forms.Timer();
+                _frameRebuildTimer.Interval = 160;
+                _frameRebuildTimer.Tick += delegate
+                {
+                    _frameRebuildTimer.Stop();
+                    RebuildBaseFrame();
+                };
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    try { _frameRebuildTimer.Stop(); _frameRebuildTimer.Dispose(); } catch { }
+                    try { if (_baseFrame != null) _baseFrame.Dispose(); } catch { }
+                    lock (_tileLock)
+                    {
+                        foreach (Image image in _tileImages.Values) try { image.Dispose(); } catch { }
+                        _tileImages.Clear();
+                    }
+                }
+                base.Dispose(disposing);
+            }
+
+            protected override void OnResize(EventArgs eventargs)
+            {
+                base.OnResize(eventargs);
+                SceneChanged();
+            }
+
+            public void SceneChanged()
+            {
+                _baseFrameDirty = true;
+                if (_frameRebuildTimer != null)
+                {
+                    _frameRebuildTimer.Stop();
+                    _frameRebuildTimer.Start();
+                }
+                Invalidate();
+            }
+
+            public void AircraftChanged()
+            {
+                Invalidate();
             }
 
             public string ZoomText
@@ -3703,7 +4864,7 @@ namespace DXLog.net
                 _fitPending = false;
                 CentreZoomOnHome();
                 _tileZoom = Math.Min(MaxTileZoom, _tileZoom + 1);
-                Invalidate();
+                SceneChanged();
             }
 
             public void ZoomOut()
@@ -3711,13 +4872,13 @@ namespace DXLog.net
                 _fitPending = false;
                 CentreZoomOnHome();
                 _tileZoom = Math.Max(MinTileZoom, _tileZoom - 1);
-                Invalidate();
+                SceneChanged();
             }
 
             public void ResetZoom()
             {
                 _fitPending = true;
-                Invalidate();
+                SceneChanged();
             }
 
             private void CanvasMouseWheel(object sender, MouseEventArgs e)
@@ -3730,25 +4891,89 @@ namespace DXLog.net
             {
                 base.OnPaint(e);
                 Graphics g = e.Graphics;
+                g.Clear(BackColor);
                 g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+                if ((_baseFrame == null || _baseFrameDirty) && !_frameRebuildTimer.Enabled && !_dragging)
+                    RebuildBaseFrame();
+
+                if (_baseFrame != null)
+                    g.DrawImageUnscaled(_baseFrame, _dragOffset.X, _dragOffset.Y);
+
                 Rectangle area = ClientRectangle;
                 area.Inflate(-10, -10);
                 if (area.Width <= 10 || area.Height <= 10) return;
 
-                if (_fitPending)
+                System.Drawing.Drawing2D.GraphicsState state = g.Save();
+                try
                 {
-                    FitStations(area);
-                    _fitPending = false;
+                    g.SetClip(area);
+                    g.TranslateTransform(_dragOffset.X, _dragOffset.Y);
+                    // After a drag is released, keep the already-shifted cached frame
+                    // visible until the replacement frame is ready. Aircraft are briefly
+                    // withheld during that frame swap so they cannot be projected against
+                    // the new centre while the old map image is still on screen.
+                    if (!_panCommitPending) DrawAircraft(g, area);
                 }
+                finally
+                {
+                    g.Restore(state);
+                }
+            }
 
-                using (SolidBrush b = new SolidBrush(Color.FromArgb(218, 235, 243))) g.FillRectangle(b, area);
-                DrawOpenStreetMapTiles(g, area);
-                DrawGrid(g, area);
-                DrawRangeRings(g, area);
-                DrawSelectedPath(g, area);
-                DrawStations(g, area);
-                DrawAircraft(g, area);
-                using (Pen border = new Pen(Color.SteelBlue)) g.DrawRectangle(border, area);
+            private void RebuildBaseFrame()
+            {
+                if (IsDisposed || ClientSize.Width < 40 || ClientSize.Height < 40) return;
+                Bitmap next = null;
+                try
+                {
+                    Rectangle area = ClientRectangle;
+                    area.Inflate(-10, -10);
+                    if (area.Width <= 10 || area.Height <= 10) return;
+                    if (_fitPending)
+                    {
+                        FitStations(area);
+                        _fitPending = false;
+                    }
+
+                    next = new Bitmap(ClientSize.Width, ClientSize.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                    using (Graphics g = Graphics.FromImage(next))
+                    {
+                        g.Clear(BackColor);
+                        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                        System.Drawing.Drawing2D.GraphicsState state = g.Save();
+                        try
+                        {
+                            g.SetClip(area);
+                            using (SolidBrush b = new SolidBrush(Color.FromArgb(218, 235, 243))) g.FillRectangle(b, area);
+                            DrawOpenStreetMapTiles(g, area);
+                            DrawGrid(g, area);
+                            DrawRangeRings(g, area);
+                            _staticLabelBounds = new List<RectangleF>();
+                            DrawSelectedPath(g, area);
+                            DrawStations(g, area);
+                        }
+                        finally
+                        {
+                            g.Restore(state);
+                        }
+                        using (Pen border = new Pen(Color.SteelBlue)) g.DrawRectangle(border, area);
+                    }
+
+                    Bitmap old = _baseFrame;
+                    _baseFrame = next;
+                    next = null;
+                    _baseFrameDirty = false;
+                    _dragOffset = Point.Empty;
+                    _panCommitPending = false;
+                    if (old != null) old.Dispose();
+                }
+                catch { }
+                finally
+                {
+                    if (next != null) next.Dispose();
+                    Invalidate();
+                }
             }
 
             private void FitStations(Rectangle area)
@@ -3915,7 +5140,7 @@ namespace DXLog.net
                     finally
                     {
                         lock (_tileLock) _tileDownloads.Remove(key);
-                        try { if (!IsDisposed) BeginInvoke((Action)(delegate { Invalidate(); })); } catch { }
+                        try { if (!IsDisposed) BeginInvoke((Action)(delegate { SceneChanged(); })); } catch { }
                     }
                 });
             }
@@ -4050,7 +5275,23 @@ namespace DXLog.net
                 PointF mid = points[points.Count / 2];
                 string caption = OwnStation.Call + " - " + SelectedStation.Call + "  " + SelectedStation.Qrb + "  " + SelectedStation.Qtf;
                 using (Font f = new Font(_owner._windowFont.FontFamily, Math.Max(8, _owner._windowFont.Size), FontStyle.Bold))
-                    DrawLabel(g, f, caption, mid.X + 8, mid.Y + 5, Color.Navy, Color.FromArgb(225, Color.White));
+                {
+                    SizeF captionSize = g.MeasureString(caption, f);
+                    RectangleF[] candidates = new RectangleF[]
+                    {
+                        GetLabelRectangle(g, f, caption, mid.X + 10, mid.Y + 8),
+                        GetLabelRectangle(g, f, caption, mid.X - captionSize.Width - 16, mid.Y + 8),
+                        GetLabelRectangle(g, f, caption, mid.X + 10, mid.Y - captionSize.Height - 10),
+                        GetLabelRectangle(g, f, caption, mid.X - captionSize.Width - 16, mid.Y - captionSize.Height - 10)
+                    };
+                    RectangleF chosen = ChooseFreeLabelRectangle(area, candidates, _staticLabelBounds);
+                    if (chosen.IsEmpty) chosen = ChooseLeastOverlappingLabelRectangle(area, candidates, _staticLabelBounds);
+                    if (!chosen.IsEmpty)
+                    {
+                        DrawLabel(g, f, caption, chosen.X, chosen.Y, Color.Navy, Color.FromArgb(225, Color.White));
+                        _staticLabelBounds.Add(chosen);
+                    }
+                }
             }
 
             private static GeoPoint GreatCircleInterpolate(GeoPoint a, GeoPoint b, double fraction)
@@ -4076,6 +5317,7 @@ namespace DXLog.net
             private void DrawAircraft(Graphics g, Rectangle area)
             {
                 if (Aircraft == null || Aircraft.Count == 0) return;
+                List<RectangleF> occupied = new List<RectangleF>(_staticLabelBounds ?? new List<RectangleF>());
                 using (Font labelFont = new Font(_owner._windowFont.FontFamily, Math.Max(7, _owner._windowFont.Size - 1), FontStyle.Bold))
                 {
                     foreach (KstMapAircraft plane in Aircraft)
@@ -4088,7 +5330,27 @@ namespace DXLog.net
                         string when = plane.Mins <= 0 ? "NOW" : plane.Mins.ToString() + "m";
                         string label = (String.IsNullOrWhiteSpace(plane.Call) ? "AIRCRAFT" : plane.Call.Trim()) + " " + when;
                         if (plane.AltitudeFt > 0) label += " " + Math.Round(plane.AltitudeFt / 1000.0, 0).ToString("0") + "kft";
-                        DrawLabel(g, labelFont, label, pt.X + 10, pt.Y - 12, Color.Black, Color.FromArgb(235, colour));
+
+                        SizeF labelSize = g.MeasureString(label, labelFont);
+                        RectangleF[] candidates = new RectangleF[]
+                        {
+                            GetLabelRectangle(g, labelFont, label, pt.X + 12, pt.Y - 14),
+                            GetLabelRectangle(g, labelFont, label, pt.X - labelSize.Width - 18, pt.Y - 14),
+                            GetLabelRectangle(g, labelFont, label, pt.X + 12, pt.Y + 8),
+                            GetLabelRectangle(g, labelFont, label, pt.X - labelSize.Width - 18, pt.Y + 8),
+                            GetLabelRectangle(g, labelFont, label, pt.X - labelSize.Width / 2 - 3, pt.Y - labelSize.Height - 16),
+                            GetLabelRectangle(g, labelFont, label, pt.X - labelSize.Width / 2 - 3, pt.Y + 14),
+                            GetLabelRectangle(g, labelFont, label, pt.X + 22, pt.Y - labelSize.Height - 20),
+                            GetLabelRectangle(g, labelFont, label, pt.X - labelSize.Width - 28, pt.Y - labelSize.Height - 20)
+                        };
+                        RectangleF chosen = ChooseFreeLabelRectangle(area, candidates, occupied);
+                        // In a very crowded area keep the aircraft symbol visible rather
+                        // than painting a label over a station, path or another aircraft.
+                        if (!chosen.IsEmpty)
+                        {
+                            DrawLabel(g, labelFont, label, chosen.X, chosen.Y, Color.Black, Color.FromArgb(235, colour));
+                            occupied.Add(chosen);
+                        }
                     }
                 }
             }
@@ -4118,6 +5380,7 @@ namespace DXLog.net
             private void DrawStations(Graphics g, Rectangle area)
             {
                 _hits = new List<KstMapHit>();
+                List<RectangleF> occupied = new List<RectangleF>(_staticLabelBounds ?? new List<RectangleF>());
                 using (Font labelFont = new Font(_owner._windowFont.FontFamily, Math.Max(7, _owner._windowFont.Size - 1), FontStyle.Bold))
                 using (Font ownFont = new Font(_owner._windowFont.FontFamily, Math.Max(8, _owner._windowFont.Size), FontStyle.Bold))
                 {
@@ -4126,22 +5389,143 @@ namespace DXLog.net
                         PointF own = Project(area, OwnStation.Lat, OwnStation.Lon);
                         using (SolidBrush b = new SolidBrush(Color.LimeGreen)) g.FillEllipse(b, own.X - 6, own.Y - 6, 12, 12);
                         using (Pen p = new Pen(Color.DarkGreen, 2)) g.DrawEllipse(p, own.X - 6, own.Y - 6, 12, 12);
-                        DrawLabel(g, ownFont, OwnStation.Call, own.X + 8, own.Y - 14, Color.DarkGreen, Color.FromArgb(220, Color.White));
+                        RectangleF ownLabel = GetLabelRectangle(g, ownFont, OwnStation.Call, own.X + 8, own.Y - 14);
+                        DrawLabel(g, ownFont, OwnStation.Call, ownLabel.X, ownLabel.Y, Color.DarkGreen, Color.FromArgb(220, Color.White));
+                        occupied.Add(ownLabel);
                     }
 
-                    foreach (KstMapStation s in Stations)
+                    List<KstMapStation> ordered = new List<KstMapStation>(Stations ?? new List<KstMapStation>());
+                    ordered.Sort(delegate(KstMapStation a, KstMapStation b)
                     {
+                        if (a == null && b == null) return 0;
+                        if (a == null) return 1;
+                        if (b == null) return -1;
+                        if (a.IsSelected != b.IsSelected) return a.IsSelected ? -1 : 1;
+                        if (a.IsActive != b.IsActive) return a.IsActive ? -1 : 1;
+                        if (a.Worked != b.Worked) return a.Worked ? 1 : -1;
+                        return String.Compare(a.Call, b.Call, StringComparison.OrdinalIgnoreCase);
+                    });
+
+                    foreach (KstMapStation station in ordered)
+                    {
+                        KstMapStation s = station;
+                        if (s == null) continue;
                         PointF pt = Project(area, s.Lat, s.Lon);
-                        if (pt.X < area.Left - 80 || pt.X > area.Right + 80 || pt.Y < area.Top - 30 || pt.Y > area.Bottom + 30) continue;
-                        Color dot = s.Worked ? Color.Gray : (s.IsSelected ? Color.Red : Color.OrangeRed);
-                        Color labelBack = s.Worked ? Color.FromArgb(220, Color.Gainsboro) : (s.IsSelected ? Color.FromArgb(235, Color.Yellow) : Color.FromArgb(230, Color.Yellow));
+                        if (pt.X < area.Left - 20 || pt.X > area.Right + 20 || pt.Y < area.Top - 20 || pt.Y > area.Bottom + 20) continue;
+                        Color dot;
+                        Color outline;
+                        Color labelBack;
                         Color labelText = s.Worked ? Color.DimGray : Color.Black;
+                        if (s.IsSelected)
+                        {
+                            dot = Color.Red;
+                            outline = Color.DarkRed;
+                            labelBack = Color.FromArgb(245, Color.LightCyan);
+                        }
+                        else if (s.IsActive)
+                        {
+                            dot = s.Worked ? Color.DarkSeaGreen : Color.LimeGreen;
+                            outline = Color.DarkGreen;
+                            labelBack = s.Worked ? Color.FromArgb(225, Color.Honeydew) : Color.FromArgb(235, Color.LightGreen);
+                        }
+                        else
+                        {
+                            dot = s.Worked ? Color.Khaki : Color.Gold;
+                            outline = Color.DarkGoldenrod;
+                            labelBack = s.Worked ? Color.FromArgb(225, Color.LightYellow) : Color.FromArgb(235, Color.Yellow);
+                        }
                         using (SolidBrush b = new SolidBrush(dot)) g.FillEllipse(b, pt.X - 4, pt.Y - 4, 8, 8);
-                        using (Pen p = new Pen(Color.DarkRed)) g.DrawEllipse(p, pt.X - 4, pt.Y - 4, 8, 8);
-                        DrawLabel(g, labelFont, s.Call, pt.X + 6, pt.Y - 10, labelText, labelBack);
+                        using (Pen p = new Pen(outline)) g.DrawEllipse(p, pt.X - 4, pt.Y - 4, 8, 8);
                         _hits.Add(new KstMapHit { Station = s, Bounds = new RectangleF(pt.X - 8, pt.Y - 8, 16, 16) });
+
+                        SizeF stationLabelSize = g.MeasureString(s.Call, labelFont);
+                        RectangleF[] candidates = new RectangleF[]
+                        {
+                            GetLabelRectangle(g, labelFont, s.Call, pt.X + 7, pt.Y - 10),
+                            GetLabelRectangle(g, labelFont, s.Call, pt.X - stationLabelSize.Width - 13, pt.Y - 10),
+                            GetLabelRectangle(g, labelFont, s.Call, pt.X + 7, pt.Y + 6),
+                            GetLabelRectangle(g, labelFont, s.Call, pt.X - stationLabelSize.Width - 13, pt.Y + 6),
+                            GetLabelRectangle(g, labelFont, s.Call, pt.X - stationLabelSize.Width / 2 - 3, pt.Y - stationLabelSize.Height - 9),
+                            GetLabelRectangle(g, labelFont, s.Call, pt.X - stationLabelSize.Width / 2 - 3, pt.Y + 10)
+                        };
+
+                        RectangleF chosen = ChooseFreeLabelRectangle(area, candidates, occupied);
+
+                        // Selected stations retain a label, using the least-overlapping
+                        // legal position if the immediate area is unusually crowded.
+                        if (chosen.IsEmpty && s.IsSelected)
+                            chosen = ChooseLeastOverlappingLabelRectangle(area, candidates, occupied);
+                        if (!chosen.IsEmpty)
+                        {
+                            DrawLabel(g, labelFont, s.Call, chosen.X, chosen.Y, labelText, labelBack);
+                            occupied.Add(chosen);
+                        }
+                    }
+                    _staticLabelBounds = occupied;
+                }
+            }
+
+            private static RectangleF ChooseFreeLabelRectangle(Rectangle area, RectangleF[] candidates, List<RectangleF> occupied)
+            {
+                if (candidates == null) return RectangleF.Empty;
+                foreach (RectangleF candidate in candidates)
+                {
+                    if (!LabelFitsArea(area, candidate)) continue;
+                    if (!LabelIntersects(candidate, occupied)) return candidate;
+                }
+                return RectangleF.Empty;
+            }
+
+            private static RectangleF ChooseLeastOverlappingLabelRectangle(Rectangle area, RectangleF[] candidates, List<RectangleF> occupied)
+            {
+                RectangleF best = RectangleF.Empty;
+                float bestOverlap = Single.MaxValue;
+                if (candidates == null) return best;
+                foreach (RectangleF candidate in candidates)
+                {
+                    if (!LabelFitsArea(area, candidate)) continue;
+                    float overlap = 0;
+                    if (occupied != null)
+                    {
+                        foreach (RectangleF used in occupied)
+                        {
+                            RectangleF expanded = used;
+                            expanded.Inflate(3, 2);
+                            RectangleF intersection = RectangleF.Intersect(expanded, candidate);
+                            if (!intersection.IsEmpty) overlap += intersection.Width * intersection.Height;
+                        }
+                    }
+                    if (overlap < bestOverlap)
+                    {
+                        bestOverlap = overlap;
+                        best = candidate;
                     }
                 }
+                return best;
+            }
+
+            private static bool LabelFitsArea(Rectangle area, RectangleF candidate)
+            {
+                return candidate.Left >= area.Left + 1 && candidate.Top >= area.Top + 1 &&
+                       candidate.Right <= area.Right - 1 && candidate.Bottom <= area.Bottom - 1;
+            }
+
+            private static bool LabelIntersects(RectangleF candidate, List<RectangleF> occupied)
+            {
+                if (occupied == null) return false;
+                foreach (RectangleF used in occupied)
+                {
+                    RectangleF expanded = used;
+                    expanded.Inflate(3, 2);
+                    if (expanded.IntersectsWith(candidate)) return true;
+                }
+                return false;
+            }
+
+            private static RectangleF GetLabelRectangle(Graphics g, Font font, string text, float x, float y)
+            {
+                SizeF size = g.MeasureString(text ?? "", font);
+                return new RectangleF(x, y, size.Width + 6, size.Height + 2);
             }
 
             private static void DrawLabel(Graphics g, Font font, string text, float x, float y, Color fore, Color back)
@@ -4156,6 +5540,10 @@ namespace DXLog.net
             private void CanvasMouseDown(object sender, MouseEventArgs e)
             {
                 if (e.Button != MouseButtons.Left) return;
+                // The post-drag frame swap normally completes in about 160 ms.
+                // Ignore a second drag during that tiny interval rather than mixing
+                // coordinates from the old cached image and the new map centre.
+                if (_panCommitPending) return;
                 _dragging = true;
                 _dragMoved = false;
                 _dragStart = e.Location;
@@ -4173,10 +5561,7 @@ namespace DXLog.net
                 int dy = e.Y - _dragStart.Y;
                 if (Math.Abs(dx) > 2 || Math.Abs(dy) > 2) _dragMoved = true;
                 if (!_dragMoved) return;
-                GeoPoint gp = PixelToLatLon(_dragStartCenterX - dx, _dragStartCenterY - dy, _tileZoom);
-                _centerLat = gp.Lat;
-                _centerLon = gp.Lon;
-                _fitPending = false;
+                _dragOffset = new Point(dx, dy);
                 Invalidate();
             }
 
@@ -4184,13 +5569,28 @@ namespace DXLog.net
             {
                 if (e.Button != MouseButtons.Left) return;
                 bool click = _dragging && !_dragMoved;
+                Point offset = _dragOffset;
                 _dragging = false;
                 Capture = false;
                 Cursor = Cursors.Hand;
                 if (click)
                 {
+                    _dragOffset = Point.Empty;
+                    _panCommitPending = false;
                     KstMapHit best = FindHit(e.Location);
                     if (best != null && StationClicked != null) StationClicked(best.Station);
+                }
+                else
+                {
+                    // Keep the old frame at its final dragged offset while the new-centre
+                    // frame is built. Clearing the offset here caused a visible snap back
+                    // to the previous position for the 160 ms rebuild delay.
+                    _panCommitPending = true;
+                    GeoPoint gp = PixelToLatLon(_dragStartCenterX - offset.X, _dragStartCenterY - offset.Y, _tileZoom);
+                    _centerLat = gp.Lat;
+                    _centerLon = gp.Lon;
+                    _fitPending = false;
+                    SceneChanged();
                 }
             }
 
@@ -4227,6 +5627,86 @@ namespace DXLog.net
         }
     }
 
+
+    internal sealed class ComposeInputMessageFilter : IMessageFilter
+    {
+        private const int WM_KEYDOWN = 0x0100;
+        private const int WM_KEYUP = 0x0101;
+        private const int WM_CHAR = 0x0102;
+        private const int WM_DEADCHAR = 0x0103;
+        private const int WM_SYSKEYDOWN = 0x0104;
+        private const int WM_SYSKEYUP = 0x0105;
+        private const int WM_SYSCHAR = 0x0106;
+        private const int WM_LBUTTONDOWN = 0x0201;
+        private const int WM_RBUTTONDOWN = 0x0204;
+        private const int WM_MBUTTONDOWN = 0x0207;
+
+        private readonly Func<bool> _shouldCapture;
+        private readonly Func<IntPtr> _targetHandle;
+        private readonly Action _release;
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        public ComposeInputMessageFilter(Func<bool> shouldCapture, Func<IntPtr> targetHandle, Action release)
+        {
+            _shouldCapture = shouldCapture;
+            _targetHandle = targetHandle;
+            _release = release;
+        }
+
+        public bool PreFilterMessage(ref Message m)
+        {
+            bool capture = false;
+            try { capture = _shouldCapture != null && _shouldCapture(); } catch { }
+            if (!capture) return false;
+
+            IntPtr target = IntPtr.Zero;
+            try { if (_targetHandle != null) target = _targetHandle(); } catch { }
+            if (target == IntPtr.Zero) return false;
+
+            if (m.Msg == WM_LBUTTONDOWN || m.Msg == WM_RBUTTONDOWN || m.Msg == WM_MBUTTONDOWN)
+            {
+                if (m.HWnd != target)
+                {
+                    try { if (_release != null) _release(); } catch { }
+                }
+                return false;
+            }
+
+            if (m.Msg == WM_KEYDOWN && (Keys)(int)m.WParam == Keys.Escape)
+            {
+                try { if (_release != null) _release(); } catch { }
+                return true;
+            }
+
+            if (m.Msg == WM_KEYDOWN && (Keys)(int)m.WParam == Keys.Tab)
+            {
+                try { if (_release != null) _release(); } catch { }
+                return false;
+            }
+
+            if (m.Msg == WM_KEYDOWN || m.Msg == WM_KEYUP || m.Msg == WM_CHAR || m.Msg == WM_DEADCHAR ||
+                m.Msg == WM_SYSKEYDOWN || m.Msg == WM_SYSKEYUP || m.Msg == WM_SYSCHAR)
+            {
+                // Once a redirected message reaches the compose TextBox, let the
+                // normal WinForms message loop translate and dispatch it. This is
+                // important because printable WM_KEYDOWN messages must be translated
+                // into WM_CHAR by Windows before the native edit control inserts text.
+                if (m.HWnd == target) return false;
+
+                // DXLog can route the physical key to its QSO entry line even after
+                // the compose TextBox was selected. Re-post the key to our TextBox
+                // and consume the original. The posted key then follows the normal
+                // TranslateMessage/DispatchMessage path, including Shift, punctuation,
+                // keyboard layouts, Backspace, cursor keys and clipboard shortcuts.
+                try { PostMessage(target, m.Msg, m.WParam, m.LParam); } catch { }
+                return true;
+            }
+            return false;
+        }
+    }
 
     internal sealed class AirScoutLivePlane
     {
@@ -4514,6 +5994,23 @@ namespace DXLog.net
         }
     }
 
+    internal sealed class ReferenceObjectComparer : IEqualityComparer<object>
+    {
+        public static readonly ReferenceObjectComparer Instance = new ReferenceObjectComparer();
+
+        private ReferenceObjectComparer() { }
+
+        public new bool Equals(object x, object y)
+        {
+            return Object.ReferenceEquals(x, y);
+        }
+
+        public int GetHashCode(object obj)
+        {
+            return obj == null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
+        }
+    }
+
     internal sealed class KstUserListComparer : IComparer
     {
         private readonly int _column;
@@ -4539,6 +6036,8 @@ namespace DXLog.net
                 result = CompareNumericWithBlanksLast(av, bv);
             else if (_column == 5)
                 result = CompareAirScoutOpportunity(av, bv);
+            else if (_column == 6)
+                result = CompareLastActivity(a, b);
             else
                 result = String.Compare(av, bv, StringComparison.OrdinalIgnoreCase);
 
@@ -4551,6 +6050,19 @@ namespace DXLog.net
         {
             if (item == null || column < 0 || column >= item.SubItems.Count) return "";
             return item.SubItems[column].Text ?? "";
+        }
+
+
+        private static int CompareLastActivity(ListViewItem a, ListViewItem b)
+        {
+            KstUserInfo au = a == null ? null : a.Tag as KstUserInfo;
+            KstUserInfo bu = b == null ? null : b.Tag as KstUserInfo;
+            DateTime at = au == null ? DateTime.MinValue : au.LastActivityUtc;
+            DateTime bt = bu == null ? DateTime.MinValue : bu.LastActivityUtc;
+            if (at == DateTime.MinValue && bt == DateTime.MinValue) return 0;
+            if (at == DateTime.MinValue) return 1;
+            if (bt == DateTime.MinValue) return -1;
+            return at.CompareTo(bt);
         }
 
         private static int CompareAirScoutOpportunity(string a, string b)
@@ -4935,10 +6447,54 @@ namespace DXLog.net
         public string Name;
         public string Locator;
         public bool Dirty;
+        public bool WorkedCurrentBand;
+        public string WorkedBandKey = "";
+        public bool WorkedCheckComplete;
+        public int MissedRefreshes;
+        public DateTime LastActivityUtc = DateTime.MinValue;
+    }
+
+    internal sealed class KstDistanceOption
+    {
+        public int MaxKm { get; private set; }
+
+        public KstDistanceOption(int maxKm)
+        {
+            MaxKm = Math.Max(0, maxKm);
+        }
+
+        public override string ToString()
+        {
+            return MaxKm <= 0 ? "All" : "0-" + MaxKm.ToString() + " km";
+        }
+    }
+
+    internal sealed class KstRoomOption
+    {
+        public int Room { get; private set; }
+        public string Title { get; private set; }
+
+        public KstRoomOption(int room, string title)
+        {
+            Room = room;
+            Title = title ?? ("Room " + room.ToString());
+        }
+
+        public override string ToString()
+        {
+            return Title;
+        }
     }
 
     internal static class KstRoomTitles
     {
+        public static List<KstRoomOption> GetOptions()
+        {
+            List<KstRoomOption> result = new List<KstRoomOption>();
+            for (int room = 1; room <= 13; room++) result.Add(new KstRoomOption(room, GetTitle(room)));
+            return result;
+        }
+
         public static string GetTitle(int room)
         {
             switch (room)
@@ -4966,6 +6522,7 @@ namespace DXLog.net
         public string Host = "www.on4kst.info";
         public int Port = 23000;
         public int Room = 2;
+        public int DistanceFilterKm = 0;
         public string Callsign = "";
         public string Password = "";
         public string Name = "";
@@ -5013,6 +6570,7 @@ namespace DXLog.net
                     if (key == "host") s.Host = val;
                     else if (key == "port" && Int32.TryParse(val, out n)) s.Port = n;
                     else if ((key == "room" || key == "chat") && Int32.TryParse(val, out n)) s.Room = n;
+                    else if ((key == "distancefilterkm" || key == "distancekm") && Int32.TryParse(val, out n)) s.DistanceFilterKm = n;
                     else if (key == "callsign") s.Callsign = val;
                     else if (key == "password") s.Password = val;
                     else if (key == "name") s.Name = val;
@@ -5055,6 +6613,7 @@ namespace DXLog.net
                 lines.Add("host=" + Host);
                 lines.Add("port=" + Port);
                 lines.Add("room=" + Room);
+                lines.Add("distancefilterkm=" + DistanceFilterKm);
                 lines.Add("callsign=" + Callsign);
                 lines.Add("password=" + Password);
                 lines.Add("name=" + Name);
@@ -5094,14 +6653,13 @@ namespace DXLog.net
                 colors = new int[ColorValues.Length];
                 Array.Copy(ColorValues, colors, ColorValues.Length);
             }
-            return new KstSettings { Host = Host, Port = Port, Room = Room, Callsign = Callsign, Password = Password, Name = Name, OwnLocator = OwnLocator, AirScoutEnabled = AirScoutEnabled, AirScoutPort = AirScoutPort, AirScoutHttpPort = AirScoutHttpPort, Macros = m, WindowX = WindowX, WindowY = WindowY, WindowW = WindowW, WindowH = WindowH, TitleBarColor = TitleBarColor, ColorValues = colors };
+            return new KstSettings { Host = Host, Port = Port, Room = Room, DistanceFilterKm = DistanceFilterKm, Callsign = Callsign, Password = Password, Name = Name, OwnLocator = OwnLocator, AirScoutEnabled = AirScoutEnabled, AirScoutPort = AirScoutPort, AirScoutHttpPort = AirScoutHttpPort, Macros = m, WindowX = WindowX, WindowY = WindowY, WindowW = WindowW, WindowH = WindowH, TitleBarColor = TitleBarColor, ColorValues = colors };
         }
     }
 
     internal sealed class KstRoomDialog : Form
     {
-        private NumericUpDown _room;
-        private Label _roomTitle;
+        private readonly ComboBox _room;
         public int Room { get; private set; }
 
         public KstRoomDialog(int currentRoom)
@@ -5112,45 +6670,41 @@ namespace DXLog.net
             StartPosition = FormStartPosition.CenterParent;
             MinimizeBox = false;
             MaximizeBox = false;
-            ClientSize = new Size(420, 135);
             ShowInTaskbar = false;
+            ClientSize = new Size(430, 130);
 
-            TableLayoutPanel p = new TableLayoutPanel();
-            p.Dock = DockStyle.Top;
-            p.Padding = new Padding(12, 12, 12, 0);
-            p.ColumnCount = 3;
-            p.RowCount = 1;
-            p.Height = 56;
-            p.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
-            p.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 105));
-            p.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            TableLayoutPanel root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 1, RowCount = 2 };
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
 
-            _room = new NumericUpDown { Minimum = 1, Maximum = 99, Value = Room, Dock = DockStyle.Left, Width = 90 };
-            _roomTitle = new Label { Text = KstRoomTitles.GetTitle(Room), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
-            _room.ValueChanged += delegate { _roomTitle.Text = KstRoomTitles.GetTitle((int)_room.Value); };
-
-            p.Controls.Add(new Label { Text = "Room", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight }, 0, 0);
-            p.Controls.Add(_room, 1, 0);
-            p.Controls.Add(_roomTitle, 2, 0);
-
-            Button ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 90, Height = 28 };
-            Button cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 90, Height = 28 };
-            FlowLayoutPanel buttons = new FlowLayoutPanel
+            TableLayoutPanel row = new TableLayoutPanel { Dock = DockStyle.Top, Height = 34, ColumnCount = 2, Margin = new Padding(0) };
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            row.Controls.Add(new Label { Text = "Room", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+            _room = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+            foreach (KstRoomOption option in KstRoomTitles.GetOptions()) _room.Items.Add(option);
+            for (int i = 0; i < _room.Items.Count; i++)
             {
-                Dock = DockStyle.Bottom,
-                Height = 48,
-                Padding = new Padding(0, 8, 12, 0),
-                FlowDirection = FlowDirection.RightToLeft
-            };
+                KstRoomOption option = _room.Items[i] as KstRoomOption;
+                if (option != null && option.Room == Room) { _room.SelectedIndex = i; break; }
+            }
+            row.Controls.Add(_room, 1, 0);
+
+            FlowLayoutPanel buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Padding = new Padding(0, 5, 0, 0) };
+            Button cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Size = new Size(88, 26), Margin = new Padding(6, 0, 0, 0) };
+            Button ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Size = new Size(88, 26) };
             buttons.Controls.Add(cancel);
             buttons.Controls.Add(ok);
-
-            Controls.Add(buttons);
-            Controls.Add(p);
+            root.Controls.Add(row, 0, 0);
+            root.Controls.Add(buttons, 0, 1);
+            Controls.Add(root);
             AcceptButton = ok;
             CancelButton = cancel;
-
-            ok.Click += delegate { Room = (int)_room.Value; };
+            ok.Click += delegate
+            {
+                KstRoomOption selected = _room.SelectedItem as KstRoomOption;
+                if (selected != null) Room = selected.Room;
+            };
         }
     }
 
@@ -5158,7 +6712,7 @@ namespace DXLog.net
     {
         private TextBox _host;
         private NumericUpDown _port;
-        private NumericUpDown _room;
+        private ComboBox _room;
         private TextBox _call;
         private TextBox _pass;
         private TextBox _name;
@@ -5166,82 +6720,101 @@ namespace DXLog.net
         private CheckBox _airScoutEnabled;
         private NumericUpDown _airScoutPort;
         private NumericUpDown _airScoutHttpPort;
+        private Panel _airScoutPortsPanel;
         public KstSettings Settings { get; private set; }
 
         public KstSetupDialog(KstSettings settings)
         {
             Settings = settings.Clone();
-            Text = "KST setup";
+            Text = "KST Chat Bridge configuration";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterParent;
             MinimizeBox = false;
             MaximizeBox = false;
-            ClientSize = new Size(620, 425);
             ShowInTaskbar = false;
+            ClientSize = new Size(650, 490);
 
-            TableLayoutPanel p = new TableLayoutPanel();
-            p.Dock = DockStyle.Top;
-            p.Padding = new Padding(12, 12, 12, 0);
-            p.ColumnCount = 2;
-            p.RowCount = 8;
-            p.Height = 326;
-            p.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 115));
-            p.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            for (int i = 0; i < 8; i++) p.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            TableLayoutPanel root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(10), ColumnCount = 1, RowCount = 4 };
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 142));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 177));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 105));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
+            GroupBox connection = new GroupBox { Text = "KST connection", Dock = DockStyle.Fill, Padding = new Padding(10, 18, 10, 8) };
+            TableLayoutPanel connectionGrid = CreateDxLogGrid(3, 105);
             _host = new TextBox { Text = Settings.Host, Dock = DockStyle.Fill };
-            _port = new NumericUpDown { Minimum = 1, Maximum = 65535, Value = Settings.Port, Dock = DockStyle.Left, Width = 100 };
-            _room = new NumericUpDown { Minimum = 1, Maximum = 99, Value = Settings.Room, Dock = DockStyle.Left, Width = 100 };
-            Label roomTitle = new Label { Text = KstRoomTitles.GetTitle(Settings.Room), AutoSize = false, Width = 360, Height = 36, Margin = new Padding(8, 0, 0, 0), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
-            _room.ValueChanged += delegate { roomTitle.Text = KstRoomTitles.GetTitle((int)_room.Value); };
+            _port = new NumericUpDown { Minimum = 1, Maximum = 65535, Value = Math.Max(1, Math.Min(65535, Settings.Port)), Width = 105, Anchor = AnchorStyles.Left };
+            _room = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+            foreach (KstRoomOption option in KstRoomTitles.GetOptions()) _room.Items.Add(option);
+            for (int i = 0; i < _room.Items.Count; i++)
+            {
+                KstRoomOption option = _room.Items[i] as KstRoomOption;
+                if (option != null && option.Room == Settings.Room) { _room.SelectedIndex = i; break; }
+            }
+            AddDxLogRow(connectionGrid, 0, "Host", _host);
+            AddDxLogRow(connectionGrid, 1, "Port", _port);
+            AddDxLogRow(connectionGrid, 2, "Room", _room);
+            connection.Controls.Add(connectionGrid);
+
+            GroupBox station = new GroupBox { Text = "Station details", Dock = DockStyle.Fill, Padding = new Padding(10, 18, 10, 8) };
+            TableLayoutPanel stationGrid = CreateDxLogGrid(4, 105);
             _call = new TextBox { Text = Settings.Callsign, Dock = DockStyle.Fill };
             _pass = new TextBox { Text = Settings.Password, UseSystemPasswordChar = true, Dock = DockStyle.Fill };
             _name = new TextBox { Text = Settings.Name, Dock = DockStyle.Fill };
-            _locator = new TextBox { Text = Settings.OwnLocator, Dock = DockStyle.Left, Width = 120 };
-            _airScoutEnabled = new CheckBox { Text = "Enable AirScout UDP integration", Checked = Settings.AirScoutEnabled, AutoSize = true, Margin = new Padding(0, 8, 18, 0) };
-            _airScoutPort = new NumericUpDown { Minimum = 1, Maximum = 65535, Value = Settings.AirScoutPort > 0 ? Settings.AirScoutPort : 9872, Width = 78, Margin = new Padding(4, 4, 8, 0) };
-            _airScoutHttpPort = new NumericUpDown { Minimum = 1, Maximum = 65535, Value = Settings.AirScoutHttpPort > 0 ? Settings.AirScoutHttpPort : 9880, Width = 78, Margin = new Padding(4, 4, 0, 0) };
+            _locator = new TextBox { Text = Settings.OwnLocator, Width = 120, Anchor = AnchorStyles.Left };
+            AddDxLogRow(stationGrid, 0, "User / call", _call);
+            AddDxLogRow(stationGrid, 1, "Password", _pass);
+            AddDxLogRow(stationGrid, 2, "Name", _name);
+            AddDxLogRow(stationGrid, 3, "QTH locator", _locator);
+            station.Controls.Add(stationGrid);
 
-            AddRow(p, 0, "Host", _host);
-            AddRow(p, 1, "Port", _port);
-            FlowLayoutPanel roomPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoScroll = false, Height = 40, Padding = new Padding(0, 0, 0, 0), Margin = new Padding(0) };
-            roomPanel.Controls.Add(_room);
-            roomPanel.Controls.Add(roomTitle);
-            AddRow(p, 2, "Room", roomPanel);
-            AddRow(p, 3, "User / call", _call);
-            AddRow(p, 4, "Password", _pass);
-            AddRow(p, 5, "Name", _name);
-            AddRow(p, 6, "QTH locator", _locator);
-            FlowLayoutPanel airScoutPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoScroll = false, Height = 40, Padding = new Padding(0), Margin = new Padding(0) };
-            airScoutPanel.Controls.Add(_airScoutEnabled);
-            airScoutPanel.Controls.Add(new Label { Text = "UDP", AutoSize = true, Margin = new Padding(0, 8, 0, 0) });
-            airScoutPanel.Controls.Add(_airScoutPort);
-            airScoutPanel.Controls.Add(new Label { Text = "HTTP", AutoSize = true, Margin = new Padding(0, 8, 0, 0) });
-            airScoutPanel.Controls.Add(_airScoutHttpPort);
-            AddRow(p, 7, "AirScout", airScoutPanel);
+            GroupBox airScout = new GroupBox { Text = "AirScout", Dock = DockStyle.Fill, Padding = new Padding(10, 18, 10, 8) };
+            _airScoutEnabled = new CheckBox { Text = "Enable AirScout integration", Checked = Settings.AirScoutEnabled, AutoSize = true, Location = new Point(12, 25) };
+            _airScoutPortsPanel = new Panel { Location = new Point(12, 50), Size = new Size(590, 34) };
+            _airScoutPort = new NumericUpDown { Minimum = 1, Maximum = 65535, Value = Settings.AirScoutPort > 0 ? Settings.AirScoutPort : 9872, Location = new Point(72, 4), Width = 82 };
+            _airScoutHttpPort = new NumericUpDown { Minimum = 1, Maximum = 65535, Value = Settings.AirScoutHttpPort > 0 ? Settings.AirScoutHttpPort : 9880, Location = new Point(254, 4), Width = 82 };
+            _airScoutPortsPanel.Controls.Add(new Label { Text = "UDP port", Location = new Point(0, 7), AutoSize = true });
+            _airScoutPortsPanel.Controls.Add(_airScoutPort);
+            _airScoutPortsPanel.Controls.Add(new Label { Text = "HTTP port", Location = new Point(182, 7), AutoSize = true });
+            _airScoutPortsPanel.Controls.Add(_airScoutHttpPort);
+            airScout.Controls.Add(_airScoutEnabled);
+            airScout.Controls.Add(_airScoutPortsPanel);
+            _airScoutEnabled.CheckedChanged += delegate { UpdateAirScoutVisibility(); };
+            UpdateAirScoutVisibility();
 
-            Button ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 90, Height = 28 };
-            Button cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 90, Height = 28 };
-            FlowLayoutPanel buttons = new FlowLayoutPanel
+            // Match DXLog's configuration dialogs: OK and Cancel form a centred
+            // button pair rather than being pushed to the far right.
+            TableLayoutPanel buttons = new TableLayoutPanel
             {
-                Dock = DockStyle.Bottom,
-                Height = 48,
-                Padding = new Padding(0, 8, 12, 0),
-                FlowDirection = FlowDirection.RightToLeft
+                Dock = DockStyle.Fill,
+                ColumnCount = 4,
+                RowCount = 1,
+                Padding = new Padding(0, 8, 0, 0),
+                Margin = new Padding(0)
             };
-            buttons.Controls.Add(cancel);
-            buttons.Controls.Add(ok);
+            buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 94));
+            buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 94));
+            buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            Button ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Size = new Size(88, 27), Anchor = AnchorStyles.Top, Margin = new Padding(3, 0, 3, 0) };
+            Button cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Size = new Size(88, 27), Anchor = AnchorStyles.Top, Margin = new Padding(3, 0, 3, 0) };
+            buttons.Controls.Add(ok, 1, 0);
+            buttons.Controls.Add(cancel, 2, 0);
 
-            Controls.Add(buttons);
-            Controls.Add(p);
+            root.Controls.Add(connection, 0, 0);
+            root.Controls.Add(station, 0, 1);
+            root.Controls.Add(airScout, 0, 2);
+            root.Controls.Add(buttons, 0, 3);
+            Controls.Add(root);
             AcceptButton = ok;
             CancelButton = cancel;
 
             ok.Click += delegate
             {
+                KstRoomOption selected = _room.SelectedItem as KstRoomOption;
                 Settings.Host = _host.Text.Trim();
                 Settings.Port = (int)_port.Value;
-                Settings.Room = (int)_room.Value;
+                if (selected != null) Settings.Room = selected.Room;
                 Settings.Callsign = _call.Text.Trim().ToUpperInvariant();
                 Settings.Password = _pass.Text;
                 Settings.Name = _name.Text.Trim();
@@ -5251,17 +6824,33 @@ namespace DXLog.net
                 Settings.AirScoutHttpPort = (int)_airScoutHttpPort.Value;
             };
 
-            Shown += delegate
-            {
-                _call.Focus();
-                _call.SelectionStart = _call.Text.Length;
-            };
+            Shown += delegate { _call.Focus(); _call.SelectionStart = _call.Text.Length; };
         }
 
-        private static void AddRow(TableLayoutPanel p, int row, string label, Control c)
+        private void UpdateAirScoutVisibility()
         {
-            p.Controls.Add(new Label { Text = label, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight }, 0, row);
-            p.Controls.Add(c, 1, row);
+            if (_airScoutPortsPanel != null)
+            {
+                _airScoutPortsPanel.Visible = _airScoutEnabled.Checked;
+                _airScoutPortsPanel.Enabled = _airScoutEnabled.Checked;
+            }
+        }
+
+        private static TableLayoutPanel CreateDxLogGrid(int rows, int labelWidth)
+        {
+            TableLayoutPanel grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = rows, Margin = new Padding(0), Padding = new Padding(0) };
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, labelWidth));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            for (int i = 0; i < rows; i++) grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 31));
+            return grid;
+        }
+
+        private static void AddDxLogRow(TableLayoutPanel grid, int row, string labelText, Control control)
+        {
+            Label label = new Label { Text = labelText, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(2, 0, 4, 0) };
+            control.Margin = new Padding(2, 3, 2, 3);
+            grid.Controls.Add(label, 0, row);
+            grid.Controls.Add(control, 1, row);
         }
     }
 
@@ -5270,14 +6859,18 @@ namespace DXLog.net
         private readonly TextBox[] _boxes = new TextBox[4];
         public string[] Macros { get; private set; }
 
-        public KstMacroDialog(string[] macros)
+        public KstMacroDialog(string[] macros) : this(macros, 0)
+        {
+        }
+
+        public KstMacroDialog(string[] macros, int focusIndex)
         {
             Text = "KST macros";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterParent;
             MinimizeBox = false;
             MaximizeBox = false;
-            ClientSize = new Size(720, 285);
+            ClientSize = new Size(600, 185);
             ShowInTaskbar = false;
 
             Macros = new string[] { "", "", "", "" };
@@ -5287,53 +6880,74 @@ namespace DXLog.net
             }
 
             TableLayoutPanel p = new TableLayoutPanel();
-            p.Dock = DockStyle.Top;
-            p.Padding = new Padding(12, 12, 12, 0);
+            p.Dock = DockStyle.Fill;
+            p.Padding = new Padding(12, 10, 12, 4);
             p.ColumnCount = 2;
-            p.RowCount = 5;
-            p.Height = 215;
-            p.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
+            p.RowCount = 4;
+            p.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58));
             p.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            for (int i = 0; i < 4; i++) p.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-            p.RowStyles.Add(new RowStyle(SizeType.Absolute, 70));
+            for (int i = 0; i < 4; i++) p.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
 
             for (int i = 0; i < 4; i++)
             {
-                _boxes[i] = new TextBox { Text = Macros[i], Dock = DockStyle.Fill };
+                _boxes[i] = new TextBox { Text = Macros[i], Dock = DockStyle.Fill, Margin = new Padding(3, 4, 3, 3) };
                 p.Controls.Add(new Label { Text = "M" + (i + 1).ToString(), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight }, 0, i);
                 p.Controls.Add(_boxes[i], 1, i);
             }
 
-            Label help = new Label
-            {
-                Text = "Each macro is sent as a directed message to the highlighted station. Tokens: {CALL}, {MYCALL}, {FREQ}, {BAND}, {MODE}",
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft,
-                AutoSize = false
-            };
-            p.Controls.Add(help, 0, 4); p.SetColumnSpan(help, 2);
 
-            Button ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 90, Height = 28 };
-            Button cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 90, Height = 28 };
-            FlowLayoutPanel buttons = new FlowLayoutPanel
+            Button ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 88, Height = 27, Margin = new Padding(4, 7, 4, 0) };
+            Button cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 88, Height = 27, Margin = new Padding(4, 7, 4, 0) };
+
+            FlowLayoutPanel buttonPair = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = new Padding(0),
+                Padding = new Padding(0)
+            };
+            buttonPair.Controls.Add(ok);
+            buttonPair.Controls.Add(cancel);
+
+            TableLayoutPanel buttons = new TableLayoutPanel
             {
                 Dock = DockStyle.Bottom,
-                Height = 48,
-                Padding = new Padding(0, 8, 12, 0),
-                FlowDirection = FlowDirection.RightToLeft
+                Height = 41,
+                ColumnCount = 3,
+                RowCount = 1,
+                Margin = new Padding(0),
+                Padding = new Padding(0)
             };
-            buttons.Controls.Add(cancel);
-            buttons.Controls.Add(ok);
+            buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 192));
+            buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            buttons.Controls.Add(buttonPair, 1, 0);
 
-            Controls.Add(buttons);
             Controls.Add(p);
+            Controls.Add(buttons);
             AcceptButton = ok;
             CancelButton = cancel;
             ok.Click += delegate
             {
                 for (int i = 0; i < 4; i++) Macros[i] = _boxes[i].Text;
             };
-            Shown += delegate { _boxes[0].Focus(); _boxes[0].SelectionStart = _boxes[0].Text.Length; };
+            Shown += delegate
+            {
+                int index = Math.Max(0, Math.Min(3, focusIndex));
+                _boxes[index].Focus();
+                _boxes[index].SelectionStart = _boxes[index].Text.Length;
+            };
+        }
+    }
+
+    internal sealed class BufferedListView : ListView
+    {
+        public BufferedListView()
+        {
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+            UpdateStyles();
         }
     }
 
