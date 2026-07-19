@@ -1,15 +1,13 @@
- # DXLog KST Chat Bridge with AirScout
+# DXLog KST Chat Bridge with AirScout
+
+**Version 2.1 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
 
 <img width="1339" height="524" alt="image" src="https://github.com/user-attachments/assets/9114bf99-691d-4922-81bc-8cdb382c4dbd" />
 
 
 <img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/0a250ac4-e470-4d47-9688-6d859c9b3f81" />
 
- 
- 
- # DXLog KST Chat Bridge with AirScout
 
-**Version 2.0 beta 15 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
 
 This custom form combines the ON4KST chat service with DXLog.net. It displays the current KST station list and chat messages, inserts selected callsigns and locators into DXLog, sends directed messages and macros, calculates QRB/QTF, controls the DXLog rotator command, and uses AirScout to show aircraft-scatter opportunities automatically.
 
@@ -135,7 +133,7 @@ The QTH locator is important. It is used for:
 
 Click **OK**, then click **Connect**.
 
-The room can also be changed later with the **Room** button. If connected, the bridge reconnects automatically using the new room.
+The room can also be changed later with the **Room** dropdown. If connected, the bridge reconnects automatically using the new room.
 
 ## KST room numbers
 
@@ -525,109 +523,34 @@ The explicit `:443` prevents affected plugin versions from changing it to the fa
 
 ---
 
-# 15. Version 2.0 beta 2 notes
-
-Beta 2 corrects three compile-time issues found in the first v2.0 beta: initialization of the active KST user reference, the reference-identity comparer used by the worked-band index, and the worked-band tooltip dictionary name.
-
-Version 2.0 beta is a performance and user-interface revision based on external contest-operator feedback.
-
-Main changes:
-
-- Main-window room selection is now a single descriptive dropdown; KST room numbers remain internal.
-- Setup and room dialogs have been rebuilt using standard DXLog-style WinForms group boxes, alignment, spacing and fixed-size OK/Cancel buttons.
-- AirScout UDP/HTTP port controls are hidden unless AirScout integration is enabled.
-- A visible custom-message entry field has been added. Select a station for a directed message, or click **CQ** for a general message, then press **Send** or Enter.
-- Macro buttons retain practical fixed widths, show the fully expanded message in a hover tooltip, and can be edited individually with a right-click.
-- Station and message lists use double buffering and one grid-drawing method to reduce flicker, hover artefacts and unnecessary full-list redraws.
-- Worked checks are throttled instead of checking an entire KST room in one UI-thread operation.
-- Station tooltips show the last message seen from that user during the current session and any worked-band information available from DXLog.
-- The map now keeps a cached base frame, separates frequent aircraft repainting from the static map/station layer, and throttles the expensive redraw after resizing.
-- OpenStreetMap tile downloads and AirScout `/planes.json` downloads remain on worker threads.
-- Map callsign labels use basic collision avoidance and clipping so lower-priority labels are omitted rather than drawn over other data.
-
-This is deliberately labelled **beta** because the historical worked-band index uses best-effort reflection against the installed DXLog version. Newly logged QSOs are tracked directly. Contest operators should verify performance with their normal voice-keying and station configuration before relying on it in a major event.
-
-# 16. Version 1.9 notes
-
-Version 1.9 adds automatic decoding of HTML character entities in KST station names. Values such as `&#9889;`, `&#8482;` and `&amp;` now display as their intended characters instead of raw entity text.
-
-# 17. Version 1.8 notes
-
-Version 1.8 includes:
-
-- Automatic full-room AirScout scanning.
-- Compact sortable AS column.
-- Selected path and aircraft overlay on the KST map.
-- AirScout UDP and HTTP port settings.
-- Five-second aircraft-map refresh.
-- Message-header white-block correction.
-- Home-centred button and mouse-wheel zoom.
-- Map dragging with the next zoom returning to the home station.
-- Ten-second KST station refresh and QSO-triggered refresh.
-- Existing CQ, directed messaging, macros, map and rotator functions.
-
 ---
+
+# 15. Version 2.1 release notes
+
+Version 2.1 is the first formal release of the redesigned DXLog KST Chat Bridge with integrated AirScout support. It promotes the tested v2.0 beta series and includes the following major improvements:
+
+- DXLog-style setup and macro dialogs with centred **OK / Cancel** controls.
+- Descriptive KST room dropdown and distance filtering from **All** to **0–2000 km**.
+- Stable 10-second KST user refresh without blanking the current station list.
+- Visible CQ/directed-message entry with keyboard routing that prevents DXLog from stealing typed text.
+- Four right-click editable macros with expanded-message tooltips.
+- **Active** and **Worked** station-list columns.
+- Automatic AirScout scanning that completes each queue before accepting a replacement list.
+- Band-change refresh of the KST list, map, worked state, selected path and AirScout queue.
+- Cached, double-buffered map rendering with smoother resize and drag behaviour.
+- Active stations shown green, inactive stations yellow and the selected station red.
+- Collision-aware station and aircraft labels.
+- A single dedicated home-station marker and label.
+- HTML entity decoding in station names.
+- Assembly and file version set to **2.1.0.0**.
+
+The historical worked-band index uses best-effort reflection against the installed DXLog version. Newly logged QSOs are tracked directly. Operators should still verify operation with their normal contest, DVK and station configuration before a major event.
 
 ## Files in this source package
 
 ```text
 DXLogKstBridge.cs       complete bridge source code
 DXLogKstBridge.csproj   Visual Studio/.NET Framework project
-README.md               this guide
+README.md               installation and operating guide
+RELEASE-NOTES-v2.1.md   concise release summary
 ```
-
----
-
-## v2.0 beta 3 corrective update
-
-This update fixes three faults found during initial beta testing:
-
-- **Room selector:** the room list now opens explicitly on mouse click or `F4`/`Alt+Down`, and room changes are handled only after the operator commits a selection.
-- **Inline message entry:** clicking the message box now enables a dedicated keyboard-input capture. This prevents DXLog's QSO entry line from taking the typed message. Click elsewhere or press `Esc` to return normal keyboard control to DXLog.
-- **KST station-list stability:** `/SH US` refreshes are no longer allowed to hold the ListView in `BeginUpdate` while waiting for the network. The existing list stays visible, overlapping requests are suppressed, empty/partial replies do not erase it, and a user is removed only after being absent from three completed refreshes.
-
-
-## v2.0 beta 5 station information
-
-The KST station list now includes two visible columns:
-
-- **Active** — the time of the latest KST message received from that callsign during the current bridge session. `--` means that no message has been seen from the station since the bridge connected. ON4KST does not provide a reliable historical last-active timestamp in the user-list response, so this column deliberately reports only activity observed by the bridge.
-- **Worked** — the bands on which the callsign has already been worked in the current DXLog log. The index is built in the background after the plugin starts and is updated immediately when a new QSO is logged. Hover over a row to see the complete list when the visible cell is clipped.
-
-Click either column heading to sort the station list.
-
-## v2.0 beta 4 note
-
-The inline CQ/custom message field now uses explicit keyboard-message routing while active. This prevents DXLog from stealing typed characters back to the QSO entry line. Press **Esc** or **Tab** to return keyboard control to DXLog.
-
-
-## v2.0 beta 6 UI corrections
-
-- Renamed the narrow **Last UTC** station-list heading to **Active** while retaining the same session UTC time values.
-- Widened the top **Disconnect** control so the complete caption is visible.
-- Removed the separate bottom **Macros...** button. Right-click **M1**, **M2**, **M3** or **M4** to edit that macro.
-
-### v2.0 beta 8 map behaviour
-
-On the KST map, a station is **active** when a KST message from that callsign has been seen during the current bridge session. Active stations are green; stations with no message seen this session are yellow. The selected station remains red. Releasing a map drag no longer briefly jumps back to the previous centre while the replacement cached frame is rendered.
-
-## v2.0 beta 11 UI correction
-
-- The Distance and Room selectors explicitly open on mouse click, F4, or Alt+Down so DXLog cannot swallow the drop-down action.
-- The KST setup dialog centres the OK and Cancel buttons in the same style as DXLog's own configuration dialogs.
-
-
-## v2.0 beta 12
-
-- Compact macro editor with centred OK and Cancel buttons.
-
-## v2.0 beta 13 AirScout scan stability
-
-- The automatic AirScout scan now completes the current station queue before a refreshed ON4KST user list can replace it. Normal 10-second `/SH US` updates therefore no longer restart a 50-station scan part-way through.
-- A replacement scan is queued only when the visible callsign/locator set actually changes. An unchanged KST snapshot does not restart AirScout.
-- Changing DXLog band or focused radio forces a KST user refresh and map refresh, clears old band-specific AS results, rechecks worked status, updates the selected path, and begins a clean scan for the new band.
-
-
-## v2.0 beta 15 macro editor
-
-- The macro help line now shows only the supported placeholders on one line: `{CALL}, {MYCALL}, {FREQ}, {BAND}, {MODE}`.
