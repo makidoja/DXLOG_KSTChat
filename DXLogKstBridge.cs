@@ -24,6 +24,13 @@ using System.Windows.Forms;
 using DXLog.net;
 using DXLogDAL;
 
+[assembly: AssemblyTitle("DXLog KST Chat Bridge")]
+[assembly: AssemblyDescription("ON4KST chat, AirScout and DXLog integration")]
+[assembly: AssemblyProduct("DXLog KST Chat Bridge")]
+[assembly: AssemblyVersion("2.1.0.0")]
+[assembly: AssemblyFileVersion("2.1.0.0")]
+[assembly: AssemblyInformationalVersion("2.1")]
+
 namespace DXLog.net
 {
     public class KstChatBridge : KForm
@@ -4279,16 +4286,24 @@ namespace DXLog.net
             List<KstMapStation> result = new List<KstMapStation>();
             try
             {
+                // The operator is drawn separately using the dedicated home-station
+                // marker and colour. Exclude the same callsign from the normal KST
+                // station pass so the map never shows two dots or labels at home.
+                string ownCall = _settings != null ? CleanCall(_settings.Callsign) : "";
+
                 foreach (KstUserInfo user in _userMap.Values)
                 {
                     if (user == null || !IsUserVisibleForCurrentFilter(user) || String.IsNullOrWhiteSpace(user.Call) || !IsValidLocator(user.Locator)) continue;
+                    string userCall = CleanCall(user.Call);
+                    if (!String.IsNullOrWhiteSpace(ownCall) && String.Equals(userCall, ownCall, StringComparison.OrdinalIgnoreCase)) continue;
+
                     string qtf;
                     string qrb;
                     CalculateQtfQrb(user.Locator, out qtf, out qrb);
                     GeoPoint pos = LocatorToPoint(user.Locator);
                     result.Add(new KstMapStation
                     {
-                        Call = CleanCall(user.Call),
+                        Call = userCall,
                         Name = user.Name ?? "",
                         Locator = NormalizeLocator(user.Locator),
                         Lat = pos.Lat,
