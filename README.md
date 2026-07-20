@@ -1,14 +1,6 @@
-# DXLog KST Chat Bridge with AirScout
+﻿# DXLog KST Chat Bridge with AirScout
 
-**Version 2.1 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
-
-<img width="1384" height="538" alt="image" src="https://github.com/user-attachments/assets/cb8268ef-dbb9-44d2-8f48-c975ddb52121" />
-
-
-
-<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/0a250ac4-e470-4d47-9688-6d859c9b3f81" />
-
-
+**Version 2.1.2 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
 
 This custom form combines the ON4KST chat service with DXLog.net. It displays the current KST station list and chat messages, inserts selected callsigns and locators into DXLog, sends directed messages and macros, calculates QRB/QTF, controls the DXLog rotator command, and uses AirScout to show aircraft-scatter opportunities automatically.
 
@@ -543,7 +535,7 @@ Version 2.1 is the first formal release of the redesigned DXLog KST Chat Bridge 
 - Collision-aware station and aircraft labels.
 - A single dedicated home-station marker and label.
 - HTML entity decoding in station names.
-- Assembly and file version set to **2.1.0.0**.
+- Assembly and file version set to **2.1.2.0**.
 
 The historical worked-band index uses best-effort reflection against the installed DXLog version. Newly logged QSOs are tracked directly. Operators should still verify operation with their normal contest, DVK and station configuration before a major event.
 
@@ -555,3 +547,15 @@ DXLogKstBridge.csproj   Visual Studio/.NET Framework project
 README.md               installation and operating guide
 RELEASE-NOTES-v2.1.md   concise release summary
 ```
+
+
+## Version 2.1.1 maintenance update
+
+- Fixed colour choices briefly applying and then reverting to the previous saved colour.
+- Fixed **Reset default colours** so all defaults are applied immediately and saved.
+- Enabled colour-change persistence regardless of which DXLog constructor opens the custom form.
+
+## Version 2.1.2 maintenance update
+
+- Closing or hiding the main KST Chat Bridge window now also closes the associated Map window.
+- The Map refresh timer and map resources are therefore disposed immediately with the bridge window.

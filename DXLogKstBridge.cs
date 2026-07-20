@@ -27,9 +27,9 @@ using DXLogDAL;
 [assembly: AssemblyTitle("DXLog KST Chat Bridge")]
 [assembly: AssemblyDescription("ON4KST chat, AirScout and DXLog integration")]
 [assembly: AssemblyProduct("DXLog KST Chat Bridge")]
-[assembly: AssemblyVersion("2.1.0.0")]
-[assembly: AssemblyFileVersion("2.1.0.0")]
-[assembly: AssemblyInformationalVersion("2.1")]
+[assembly: AssemblyVersion("2.1.2.0")]
+[assembly: AssemblyFileVersion("2.1.2.0")]
+[assembly: AssemblyInformationalVersion("2.1.2")]
 
 namespace DXLog.net
 {
@@ -111,6 +111,7 @@ namespace DXLog.net
         private ComposeInputMessageFilter _composeInputFilter;
         private bool _composeDialogOpen;
         private bool _loadedPersistentColors;
+        private bool _handlingLiveFormLayoutChange;
         private bool _restoringWindowBounds;
         private System.Windows.Forms.Timer _persistSaveTimer;
         private System.Windows.Forms.Timer _startupBoundsRestoreTimer;
@@ -142,6 +143,7 @@ namespace DXLog.net
             _settings = KstSettings.Load();
             ConfigureColorSet();
             BuildUi();
+            FormLayoutChangeEvent += new FormLayoutChange(HandleFormLayoutChangeEvent);
         }
 
         public KstChatBridge(ContestData cdata)
@@ -209,21 +211,40 @@ namespace DXLog.net
 
         private void HandleFormLayoutChangeEvent()
         {
-            InitializeLayout();
-            // The DXLog colour/font menu updates KForm.FormLayout and then raises this event.
-            // Save immediately so colour changes survive closing/reopening this custom form.
-            SavePersistentUiSettings();
+            // DXLog has already written the user's new colour/font choices into
+            // FormLayout when this event is raised.  Do not inject the previously
+            // saved plug-in colours here, otherwise the new colour flashes briefly
+            // and is immediately replaced by the old value.
+            if (_handlingLiveFormLayoutChange) return;
+
+            _handlingLiveFormLayoutChange = true;
+            try
+            {
+                InitializeLayout();
+                // Save the newly applied values immediately, including a Reset to
+                // default colours, so they survive closing and reopening the form.
+                SavePersistentUiSettings();
+            }
+            finally
+            {
+                _handlingLiveFormLayoutChange = false;
+            }
         }
 
         public override void InitializeLayout()
         {
-            // DXLog applies its saved FormLayout after constructing a custom form.
-            // Re-apply the plugin INI values here, before KForm.InitializeLayout(),
-            // so position, size, colours and title-bar colour win when the form is reopened.
-            ApplySavedSettingsToFormLayoutBeforeInitialize();
+            // On initial/open layout, restore the plug-in's persisted settings.
+            // During a live DXLog colour/font menu change, FormLayout already contains
+            // the user's new values and must not be overwritten by the old INI values.
+            if (!_handlingLiveFormLayoutChange)
+                ApplySavedSettingsToFormLayoutBeforeInitialize();
 
             base.InitializeLayout(_windowFont);
-            ApplyPersistedColorsOnce();
+
+            if (_handlingLiveFormLayoutChange)
+                ApplyColoursFromCurrentFormLayout();
+            else
+                ApplyPersistedColorsOnce();
 
             if (!String.IsNullOrEmpty(base.FormLayout.FontName) && base.FormLayout.FontSize > 0)
             {
@@ -594,10 +615,17 @@ namespace DXLog.net
             // Save our own settings as well as DXLog's FormLayout.  DXLog does not
             // always persist custom-form layout/colours immediately when a custom
             // window is closed and reopened, so this plugin keeps its own INI too.
-            FormClosing += delegate { SavePersistentUiSettings(); };
-            FormClosed += delegate { SavePersistentUiSettings(); };
-            HandleDestroyed += delegate { SavePersistentUiSettings(); };
-            VisibleChanged += delegate { if (!Visible) SavePersistentUiSettings(); };
+            FormClosing += delegate { CloseMapWindow(); SavePersistentUiSettings(); };
+            FormClosed += delegate { CloseMapWindow(); SavePersistentUiSettings(); };
+            HandleDestroyed += delegate { CloseMapWindow(); SavePersistentUiSettings(); };
+            VisibleChanged += delegate
+            {
+                if (!Visible)
+                {
+                    CloseMapWindow();
+                    SavePersistentUiSettings();
+                }
+            };
             if (ContextMenuStrip != null)
                 ContextMenuStrip.Closed += delegate { SavePersistentUiSettings(); };
 
@@ -890,6 +918,29 @@ namespace DXLog.net
                     if (argb != 0)
                         ColorValues[i] = Color.FromArgb(argb);
                 }
+                SyncDxLogFormLayoutForPersistence();
+            }
+            catch { }
+        }
+
+
+        private void ApplyColoursFromCurrentFormLayout()
+        {
+            try
+            {
+                if (ColorValues == null || DefaultColors == null) return;
+
+                int[] flags = FormLayout.ColorFlags;
+                int count = Math.Min(ColorValues.Length, DefaultColors.Length);
+                for (int i = 0; i < count; i++)
+                {
+                    // DXLog represents a reset/default entry as zero.  Convert that
+                    // explicitly to the configured default instead of leaving the old
+                    // custom colour in ColorValues.
+                    int argb = flags != null && i < flags.Length ? flags[i] : 0;
+                    ColorValues[i] = argb == 0 ? DefaultColors[i] : Color.FromArgb(argb);
+                }
+
                 SyncDxLogFormLayoutForPersistence();
             }
             catch { }
@@ -4259,6 +4310,19 @@ namespace DXLog.net
             {
                 UpdateStatus("Map open failed: " + ex.Message);
             }
+        }
+
+        private void CloseMapWindow()
+        {
+            try
+            {
+                KstUserMapForm map = _mapForm;
+                _mapForm = null;
+
+                if (map != null && !map.IsDisposed)
+                    map.Close();
+            }
+            catch { }
         }
 
         private void RefreshMapWindow()
