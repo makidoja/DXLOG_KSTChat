@@ -27,9 +27,9 @@ using DXLogDAL;
 [assembly: AssemblyTitle("DXLog KST Chat Bridge")]
 [assembly: AssemblyDescription("ON4KST chat, AirScout and DXLog integration")]
 [assembly: AssemblyProduct("DXLog KST Chat Bridge")]
-[assembly: AssemblyVersion("2.1.2.0")]
-[assembly: AssemblyFileVersion("2.1.2.0")]
-[assembly: AssemblyInformationalVersion("2.1.2")]
+[assembly: AssemblyVersion("2.1.3.0")]
+[assembly: AssemblyFileVersion("2.1.3.0")]
+[assembly: AssemblyInformationalVersion("2.1.3")]
 
 namespace DXLog.net
 {
@@ -6578,17 +6578,17 @@ namespace DXLog.net
         {
             switch (room)
             {
-                case 1: return "50 MHz";
+                case 1: return "50/70 MHz";
                 case 2: return "144/432 MHz";
-                case 3: return "1296 MHz";
-                case 4: return "2.3/3.4 GHz";
-                case 5: return "5.7/10 GHz";
-                case 6: return "24 GHz and up";
-                case 7: return "EME";
-                case 8: return "MS";
-                case 9: return "144/432 MHz IARU R3";
-                case 10: return "2000-630 m";
-                case 11: return "WARC 30/17/12 m";
+                case 3: return "Microwave";
+                case 4: return "EME";
+                case 5: return "LowBand";
+                case 6: return "50/70 MHz R3";
+                case 7: return "50/70 MHz R2";
+                case 8: return "144/432 MHz R2";
+                case 9: return "144/432 MHz R3";
+                case 10: return "kHz (2000-630 m)";
+                case 11: return "WARC (30/17/12 m)";
                 case 12: return "28 MHz";
                 case 13: return "40 MHz";
                 default: return "Room " + room.ToString();
