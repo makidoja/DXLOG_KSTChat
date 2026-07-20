@@ -2,6 +2,10 @@
 
 **Version 2.1.2 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
 
+<img width="1384" height="538" alt="image" src="https://github.com/user-attachments/assets/74dd7dd0-262e-44d2-9675-a4bd031e3d33" />
+
+<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/5317c60f-1b2b-43d4-a0a5-fcd07f47e015" />
+
 This custom form combines the ON4KST chat service with DXLog.net. It displays the current KST station list and chat messages, inserts selected callsigns and locators into DXLog, sends directed messages and macros, calculates QRB/QTF, controls the DXLog rotator command, and uses AirScout to show aircraft-scatter opportunities automatically.
 
 The bridge is supplied as source code and builds as an **x86 .NET Framework 4.8 class library**.
