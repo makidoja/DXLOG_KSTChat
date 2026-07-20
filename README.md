@@ -1,6 +1,6 @@
-﻿# DXLog KST Chat Bridge with AirScout
+# DXLog KST Chat Bridge with AirScout
 
-**Version 2.1.2 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
+**Version 2.1.3 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
 
 <img width="1384" height="538" alt="image" src="https://github.com/user-attachments/assets/74dd7dd0-262e-44d2-9675-a4bd031e3d33" />
 
@@ -135,17 +135,17 @@ The room can also be changed later with the **Room** dropdown. If connected, the
 ## KST room numbers
 
 ```text
-1   50 MHz
+1   50/70 MHz
 2   144/432 MHz
-3   1296 MHz
-4   2.3/3.4 GHz
-5   5.7/10 GHz
-6   24 GHz and up
-7   EME
-8   MS
-9   144/432 MHz IARU R3
-10  2000–630 m
-11  WARC 30/17/12 m
+3   Microwave
+4   EME
+5   LowBand
+6   50/70 MHz R3
+7   50/70 MHz R2
+8   144/432 MHz R2
+9   144/432 MHz R3
+10  kHz (2000–630 m)
+11  WARC (30/17/12 m)
 12  28 MHz
 13  40 MHz
 ```
@@ -539,7 +539,7 @@ Version 2.1 is the first formal release of the redesigned DXLog KST Chat Bridge 
 - Collision-aware station and aircraft labels.
 - A single dedicated home-station marker and label.
 - HTML entity decoding in station names.
-- Assembly and file version set to **2.1.2.0**.
+- Assembly and file version set to **2.1.3.0**.
 
 The historical worked-band index uses best-effort reflection against the installed DXLog version. Newly logged QSOs are tracked directly. Operators should still verify operation with their normal contest, DVK and station configuration before a major event.
 
@@ -558,6 +558,13 @@ RELEASE-NOTES-v2.1.md   concise release summary
 - Fixed colour choices briefly applying and then reverting to the previous saved colour.
 - Fixed **Reset default colours** so all defaults are applied immediately and saved.
 - Enabled colour-change persistence regardless of which DXLog constructor opens the custom form.
+
+
+## Version 2.1.3 maintenance update
+
+- Updated the KST room names and ordering to match the current KSTChat v1.30.2 room menu.
+- Replaced the obsolete separate microwave-band room labels with the current combined **Microwave** room.
+- Added the current Region 2 and Region 3 room labels for 50/70 MHz and 144/432 MHz.
 
 ## Version 2.1.2 maintenance update
 
