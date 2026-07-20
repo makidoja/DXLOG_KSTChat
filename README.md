@@ -2,7 +2,8 @@
 
 **Version 2.1 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
 
-<img width="1339" height="524" alt="image" src="https://github.com/user-attachments/assets/9114bf99-691d-4922-81bc-8cdb382c4dbd" />
+<img width="1384" height="538" alt="image" src="https://github.com/user-attachments/assets/cb8268ef-dbb9-44d2-8f48-c975ddb52121" />
+
 
 
 <img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/0a250ac4-e470-4d47-9688-6d859c9b3f81" />
