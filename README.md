@@ -3,7 +3,8 @@
 
 ## v2.3.3 maintenance fix
 
-<img width="1384" height="538" alt="image" src="https://github.com/user-attachments/assets/74dd7dd0-262e-44d2-9675-a4bd031e3d33" />
+<img width="1386" height="538" alt="image" src="https://github.com/user-attachments/assets/eb123f72-5990-4bd9-b415-48da24c8113a" />
+
 
 <img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/5317c60f-1b2b-43d4-a0a5-fcd07f47e015" />
 
