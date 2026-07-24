@@ -1,10 +1,15 @@
 # DXLog KST Chat Bridge with AirScout
+**Version 2.3.3 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
 
-**Version 2.1.3 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
+## v2.3.3 maintenance fix
 
 <img width="1384" height="538" alt="image" src="https://github.com/user-attachments/assets/74dd7dd0-262e-44d2-9675-a4bd031e3d33" />
 
 <img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/5317c60f-1b2b-43d4-a0a5-fcd07f47e015" />
+
+- Right-clicking a callsign or message now shows only the KST Bridge menu.
+- DXLog's inherited log/entry context menu is suppressed on embedded bridge lists.
+- The DXLog colour/options menu remains available only from the bridge title bar.
 
 This custom form combines the ON4KST chat service with DXLog.net. It displays the current KST station list and chat messages, inserts selected callsigns and locators into DXLog, sends directed messages and macros, calculates QRB/QTF, controls the DXLog rotator command, and uses AirScout to show aircraft-scatter opportunities automatically.
 
@@ -15,7 +20,7 @@ The bridge is supplied as source code and builds as an **x86 .NET Framework 4.8 
 ## Main features
 
 - ON4KST classic telnet connection and room selection.
-- Station list with callsign, name, locator, QTF, QRB, AirScout opportunity, last KST activity and DXLog worked bands.
+- Station list with callsign, name, locator, QTF, QRB, graphical AirScout opportunity, last KST activity and selectable DXLog worked-band columns.
 - General CQ and directed KST messaging.
 - Four editable message macros using live DXLog frequency, band and mode.
 - Double-click a station to enter its callsign and locator into DXLog.
@@ -25,9 +30,58 @@ The bridge is supplied as source code and builds as an **x86 .NET Framework 4.8 
 - OpenStreetMap station map with pan, zoom and station selection.
 - Optional DXLog rotator command when a station is selected on the map.
 - Automatic AirScout scan of every KST station with a valid locator.
-- Sortable **AS** column showing `NOW`, `Xm`, `-`, or blank.
+- Graphical **AS** column using a green blob for **NOW**, an orange blob plus minutes for an approaching aircraft, `-` for no suitable aircraft, or blank before a result is available.
+- Optional automatic AS sorting and filters for **All**, **NOW**, or opportunities within 5, 10 or 20 minutes.
+- Persistent station watchlist. Watched calls are marked with a gold star, stay visible through filters and are scanned first by AirScout.
+- Optional audible/balloon AirScout alerts when a station crosses the configured opportunity threshold.
 - Selected AirScout path and matched aircraft drawn on the KST map.
+- Optional 90-second aircraft trails and watched-station highlighting on the map.
+- Rich station tooltips with AirScout aircraft, opportunity, potential, intersection QRB, altitude, speed and track where available.
+- Right-click the status line for lightweight performance diagnostics.
+- DXLog colour/options menu is restricted to the green title bar; station, message, macro, map and status areas keep their own context actions.
 - Window position, size, colours and macros saved between sessions.
+
+---
+
+## v2.3 opportunity controls
+
+The top bar includes an **AS** filter and an **Auto** checkbox:
+
+- **All** — show every station allowed by the distance filter.
+- **NOW** — show only current AirScout opportunities.
+- **≤5m / ≤10m / ≤20m** — show stations with an opportunity inside that time.
+- **Auto** — continually keeps NOW and approaching stations at the top.
+
+Right-click a station and choose **Add to watchlist**. Watched stations:
+
+- remain visible even when outside the current distance or AS filter;
+- are marked with a gold star in the list and map;
+- are queried first in each AirScout scan;
+- remain watched after restarting DXLog.
+
+AirScout alerts and aircraft trails are configured in **Setup → AirScout**.
+
+### Additional macro tokens
+
+Alongside `{CALL}`, `{MYCALL}`, `{FREQ}`, `{FREQMHZ}`, `{BAND}` and `{MODE}`, v2.3 supports:
+
+- `{LOC}` — selected station locator
+- `{MYLOC}` — home locator
+- `{QTF}` — bearing in degrees
+- `{QRB}` — distance in kilometres
+- `{AS}` — `NOW` or predicted minutes such as `5m`
+- `{AIRCRAFT}` — best AirScout aircraft identifier
+- `{ASMIN}` — predicted minutes as a number
+
+Example:
+
+```text
+PSE SKED {FREQ} {MODE} QTF {QTF} AS {AS} {AIRCRAFT}
+```
+
+### Performance diagnostics
+
+Right-click the bottom status line to view the latest KST refresh, AirScout reply, aircraft-feed and map-render timings. This is intended for contest testing and checking that the bridge is not causing long UI stalls.
 
 ---
 
@@ -152,6 +206,23 @@ The room can also be changed later with the **Room** dropdown. If connected, the
 
 ---
 
+
+## Worked-band columns
+
+Open **Setup** and use **Worked-band columns** to choose which bands are shown in the station list. Available columns are:
+
+```text
+50, 70, 144, 432, 1296, 2320, 3400, 5760, 10G, 24G, 47G, 76G
+```
+
+A green tick means that callsign has been worked on that band in the current DXLog log. Unselected bands are hidden, which keeps the station list compact. The full worked-band summary remains available in the station tooltip.
+
+By default, new installations show the **144** and **432** columns. Existing settings are retained in:
+
+```text
+%APPDATA%\DXLog.net\KstChatBridgeTelnet.ini
+```
+
 # 4. Configure an aircraft feed in AirScout
 
 AirScout must show live aircraft on its own map before the bridge can produce useful AS results.
@@ -235,6 +306,15 @@ Enable AirScout UDP integration
 UDP:  9872
 HTTP: 9880
 ```
+
+The station list uses these AirScout indicators:
+
+- **Green blob** — the best aircraft opportunity is available now.
+- **Orange blob plus `Xm`** — the best aircraft is approaching in the displayed number of minutes.
+- **`-`** — AirScout replied but reported no suitable aircraft.
+- Blank — that station has not yet been scanned.
+
+Matched aircraft on the KST map use the same green/orange status colours. AirScout remains the prediction and aircraft-data engine; v2.3 changes only the bridge presentation.
 
 The bridge status at the bottom-right can show:
 
