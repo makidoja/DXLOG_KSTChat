@@ -1,16 +1,32 @@
 # DXLog KST Chat Bridge with AirScout
-**Version 2.3.3 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
 
-## v2.3.3 maintenance fix
+**Version 2.4.3 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
 
 <img width="1386" height="538" alt="image" src="https://github.com/user-attachments/assets/eb123f72-5990-4bd9-b415-48da24c8113a" />
 
 
 <img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/5317c60f-1b2b-43d4-a0a5-fcd07f47e015" />
 
-- Right-clicking a callsign or message now shows only the KST Bridge menu.
-- DXLog's inherited log/entry context menu is suppressed on embedded bridge lists.
-- The DXLog colour/options menu remains available only from the bridge title bar.
+# DXLog KST Chat Bridge with AirScout
+
+**Version 2.4.3 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
+
+## What is new in v2.4.3
+
+- **Unread directed-message indicator:** the new **Msg** column shows an orange unread count for directed KST messages. Selecting that station or its message clears the count.
+- **Per-band macro profiles:** M1–M4 are now stored separately for General, 50/70 MHz, 144/432 MHz, 1296 MHz, Microwave and EME operation. The active profile follows the current DXLog band/room automatically.
+- **Need filter:** a new **Need** option combines with the existing Distance and AS filters to show stations not yet worked on the current DXLog band. Watched stations remain visible.
+- **Prepare contact:** right-click a station and choose **Prepare contact** to place its call/locator into DXLog, open and update the map, request its AirScout path and focus the message field.
+- **Persistent station notes:** add, edit or clear a note from the station context menu. Notes are retained between sessions and shown in the station tooltip.
+- **AirScout feed health:** while the map is open, the status reports when the live aircraft HTTP feed has become stale and retains the last good aircraft data through temporary failures.
+- **UI-latency diagnostics:** the performance window now reports current and maximum UI delay alongside KST, AirScout and map timings.
+- **Rotator sequencing fix:** the DXLog callsign and locator are now allowed to finish updating before the bridge triggers DXLog's Ctrl+F12 rotator command. This restores reliable rotator control from the map.
+- **Explicit rotator command:** right-click a station and choose **Turn rotator to N°** to enter the station into DXLog and turn the antenna using DXLog's normal rotator command.
+- **DXLog compatibility:** the bridge now searches for compatible short-path rotator handler names and retains keyboard/direct-azimuth fallbacks.
+- **Authoritative KST locator:** after DXLog performs its callsign lookup, the bridge overwrites the Loc/Grid/QRA field with the latest locator advertised by that station on KST.
+- **Rotator on station selection:** a deliberate left-click on a KST station and **Prepare contact** now turn the rotator when **Turn rotator on click** is enabled in the Map window.
+- **Single prepared station:** preparing another contact clears the previous highlighted station, leaving only the newly prepared station selected.
+- **Persistent rotator preference:** the Map window's **Turn rotator on click** setting is retained between sessions.
 
 This custom form combines the ON4KST chat service with DXLog.net. It displays the current KST station list and chat messages, inserts selected callsigns and locators into DXLog, sends directed messages and macros, calculates QRB/QTF, controls the DXLog rotator command, and uses AirScout to show aircraft-scatter opportunities automatically.
 
@@ -21,7 +37,10 @@ The bridge is supplied as source code and builds as an **x86 .NET Framework 4.8 
 ## Main features
 
 - ON4KST classic telnet connection and room selection.
-- Station list with callsign, name, locator, QTF, QRB, graphical AirScout opportunity, last KST activity and selectable DXLog worked-band columns.
+- Station list with callsign, name, locator, QTF, QRB, graphical AirScout opportunity, last KST activity, unread directed-message count and selectable DXLog worked-band columns.
+- Optional **Need** filter for stations not yet worked on the current band.
+- Per-band M1–M4 macro profiles selected automatically from the current operating band.
+- Persistent station notes and one-click **Prepare contact** workflow.
 - General CQ and directed KST messaging.
 - Four editable message macros using live DXLog frequency, band and mode.
 - Double-click a station to enter its callsign and locator into DXLog.
@@ -44,7 +63,7 @@ The bridge is supplied as source code and builds as an **x86 .NET Framework 4.8 
 
 ---
 
-## v2.3 opportunity controls
+## AirScout opportunity controls
 
 The top bar includes an **AS** filter and an **Auto** checkbox:
 
@@ -64,7 +83,7 @@ AirScout alerts and aircraft trails are configured in **Setup → AirScout**.
 
 ### Additional macro tokens
 
-Alongside `{CALL}`, `{MYCALL}`, `{FREQ}`, `{FREQMHZ}`, `{BAND}` and `{MODE}`, v2.3 supports:
+Alongside `{CALL}`, `{MYCALL}`, `{FREQ}`, `{FREQMHZ}`, `{BAND}` and `{MODE}`, the bridge supports:
 
 - `{LOC}` — selected station locator
 - `{MYLOC}` — home locator
@@ -315,7 +334,7 @@ The station list uses these AirScout indicators:
 - **`-`** — AirScout replied but reported no suitable aircraft.
 - Blank — that station has not yet been scanned.
 
-Matched aircraft on the KST map use the same green/orange status colours. AirScout remains the prediction and aircraft-data engine; v2.3 changes only the bridge presentation.
+Matched aircraft on the KST map use the same green/orange status colours. AirScout remains the prediction and aircraft-data engine; the bridge handles the DXLog/KST presentation and workflow.
 
 The bridge status at the bottom-right can show:
 
@@ -651,3 +670,10 @@ RELEASE-NOTES-v2.1.md   concise release summary
 
 - Closing or hiding the main KST Chat Bridge window now also closes the associated Map window.
 - The Map refresh timer and map resources are therefore disposed immediately with the bridge window.
+
+## v2.4.1 maintenance fixes
+
+- Incoming messages no longer change the selected station, map trace or AirScout path.
+- Prepare Contact updates AirScout silently without raising the AirScout window.
+- Prepare Contact now inserts the callsign and KST locator into the active DXLog entry line after the context menu closes.
+- Use **Show path in AirScout** when you deliberately want AirScout brought to the foreground.
