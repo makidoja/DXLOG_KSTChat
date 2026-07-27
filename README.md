@@ -5,7 +5,8 @@
 <img width="1386" height="538" alt="image" src="https://github.com/user-attachments/assets/eb123f72-5990-4bd9-b415-48da24c8113a" />
 
 
-<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/5317c60f-1b2b-43d4-a0a5-fcd07f47e015" />
+<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/60e69401-749e-4d0d-9c24-7c0d39896375" />
+
 
 # DXLog KST Chat Bridge with AirScout
 
