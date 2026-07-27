@@ -30,9 +30,9 @@ using DXLogDAL;
 [assembly: AssemblyTitle("DXLog KST Chat Bridge")]
 [assembly: AssemblyDescription("ON4KST chat, AirScout and DXLog integration")]
 [assembly: AssemblyProduct("DXLog KST Chat Bridge")]
-[assembly: AssemblyVersion("2.4.3.0")]
-[assembly: AssemblyFileVersion("2.4.3.0")]
-[assembly: AssemblyInformationalVersion("2.4.3")]
+[assembly: AssemblyVersion("2.5.0.0")]
+[assembly: AssemblyFileVersion("2.5.0.0")]
+[assembly: AssemblyInformationalVersion("2.5")]
 
 namespace DXLog.net
 {
@@ -40,6 +40,8 @@ namespace DXLog.net
     {
         private const int UserListPanelWidth = 620;
         private const int UserListPanelMinWidth = 600;
+        private const int MainWindowMinimumWidth = 1180;
+        private const int MainWindowMinimumHeight = 360;
         private const int UserColCall = 0;
         private const int UserColName = 1;
         private const int UserColLocator = 2;
@@ -73,6 +75,8 @@ namespace DXLog.net
         private CheckBox _airScoutAutoSortCheck;
         private CheckBox _unworkedOnlyCheck;
         private bool _rebuildingVisibleUserList;
+        private bool _adjustingUserColumns;
+        private string _lastNameHoverCall = "";
         private Button _mapButton;
         private KstUserMapForm _mapForm;
         private TextBox _userBox;
@@ -89,7 +93,7 @@ namespace DXLog.net
         private Button _sendButton;
         private Button _cqButton;
         private TextBox _composeBox;
-        private Label _composeTargetLabel;
+        private TextBox _composeTargetLabel;
         private ToolTip _macroToolTip;
         private ToolTip _airScoutAlertToolTip;
         private Label _statusLabel;
@@ -138,6 +142,7 @@ namespace DXLog.net
         private bool _loadedPersistentColors;
         private bool _handlingLiveFormLayoutChange;
         private bool _restoringWindowBounds;
+        private bool _enforcingMinimumWindowSize;
         private System.Windows.Forms.Timer _persistSaveTimer;
         private System.Windows.Forms.Timer _startupBoundsRestoreTimer;
         private bool _startupPositionRestoreDone;
@@ -438,7 +443,26 @@ namespace DXLog.net
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
+            EnforceMinimumWindowSize();
             SaveLayoutAfterUserMoveOrResize();
+        }
+
+        private void EnforceMinimumWindowSize()
+        {
+            try
+            {
+                if (_enforcingMinimumWindowSize || WindowState != FormWindowState.Normal) return;
+                int requiredWidth = Math.Max(MainWindowMinimumWidth, MinimumSize.Width);
+                int requiredHeight = Math.Max(MainWindowMinimumHeight, MinimumSize.Height);
+                if (Width >= requiredWidth && Height >= requiredHeight) return;
+
+                _enforcingMinimumWindowSize = true;
+                Size = new Size(Math.Max(Width, requiredWidth), Math.Max(Height, requiredHeight));
+            }
+            finally
+            {
+                _enforcingMinimumWindowSize = false;
+            }
         }
 
         protected override void OnLocationChanged(EventArgs e)
@@ -470,7 +494,7 @@ namespace DXLog.net
 
         private void BuildUi()
         {
-            MinimumSize = new Size(940, 360);
+            MinimumSize = new Size(MainWindowMinimumWidth, MainWindowMinimumHeight);
             if (Width < 1180) Width = 1180;
             if (Height < 460) Height = 460;
 
@@ -493,13 +517,13 @@ namespace DXLog.net
             _userBox = new TextBox { Text = _settings.Callsign };
             _passBox = new TextBox { Text = _settings.Password, UseSystemPasswordChar = true };
 
-            _setupButton = new Button { Text = "Setup", Dock = DockStyle.Fill, Margin = new Padding(3) };
-            _connectButton = new Button { Text = "Connect", Dock = DockStyle.Fill, Margin = new Padding(3) };
-            _disconnectButton = new Button { Text = "Disconnect", Dock = DockStyle.Fill, Margin = new Padding(3), Enabled = false };
-            _mapButton = new Button { Text = "Map", Dock = DockStyle.Fill, Margin = new Padding(3) };
+            _setupButton = new Button { Text = "Setup", Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(3) };
+            _connectButton = new Button { Text = "Connect", Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(3) };
+            _disconnectButton = new Button { Text = "Disconnect", Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(3), Enabled = false };
+            _mapButton = new Button { Text = "Map", Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(3) };
             _roomCombo = new ComboBox
             {
-                Dock = DockStyle.Fill,
+                Anchor = AnchorStyles.Left | AnchorStyles.Right,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 FlatStyle = FlatStyle.Standard,
                 IntegralHeight = false,
@@ -511,7 +535,7 @@ namespace DXLog.net
 
             _distanceCombo = new ComboBox
             {
-                Dock = DockStyle.Fill,
+                Anchor = AnchorStyles.Left | AnchorStyles.Right,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 FlatStyle = FlatStyle.Standard,
                 IntegralHeight = true,
@@ -522,7 +546,7 @@ namespace DXLog.net
 
             _airScoutFilterCombo = new ComboBox
             {
-                Dock = DockStyle.Fill,
+                Anchor = AnchorStyles.Left | AnchorStyles.Right,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 FlatStyle = FlatStyle.Standard,
                 IntegralHeight = true,
@@ -532,57 +556,58 @@ namespace DXLog.net
             PopulateAirScoutFilterCombo(_airScoutFilterCombo, _settings.AirScoutFilterMinutes);
             _airScoutAutoSortCheck = new CheckBox
             {
-                Text = "Auto",
+                Text = "Auto sort",
                 Checked = _settings.AirScoutAutoSort,
-                Dock = DockStyle.Fill,
+                Anchor = AnchorStyles.Left,
                 TextAlign = ContentAlignment.MiddleLeft,
-                AutoSize = false,
+                AutoSize = true,
                 Margin = new Padding(3, 0, 3, 0)
             };
             _unworkedOnlyCheck = new CheckBox
             {
                 Text = "Need",
                 Checked = _settings.UnworkedCurrentBandOnly,
-                Dock = DockStyle.Fill,
+                Anchor = AnchorStyles.Left,
                 TextAlign = ContentAlignment.MiddleLeft,
-                AutoSize = false,
+                AutoSize = true,
                 Margin = new Padding(3, 0, 3, 0)
             };
 
-            // DXLog-style fixed controls with a flexible centre spacer. Keep the
-            // distance filter beside Map; keep room selection and connection controls
-            // together at the right-hand side. Label columns are deliberately wide
-            // enough for the complete words at DXLog's normal UI font and DPI.
+            // DXLog-style fixed controls with a flexible centre spacer. All controls
+            // use their normal WinForms height and are vertically centred in one row,
+            // matching the alignment used by DXLog configuration dialogs.
             TableLayoutPanel headerPanel = new TableLayoutPanel();
             headerPanel.Dock = DockStyle.Fill;
             headerPanel.Margin = new Padding(0);
             headerPanel.Padding = new Padding(0);
-            headerPanel.ColumnCount = 15;
+            headerPanel.ColumnCount = 13;
             headerPanel.RowCount = 1;
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
+            headerPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 78));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
             headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
             headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 68));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 102));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
             headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 114));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 2));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 2));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 54));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 174));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
+            Label distanceLabel = new Label { Text = "Distance", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(6, 0, 0, 0), AutoSize = false };
+            Label airScoutFilterLabel = new Label { Text = "AS", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(4, 0, 0, 0), AutoSize = false };
+            Label roomLabel = new Label { Text = "Room", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(6, 0, 0, 0), AutoSize = false };
             headerPanel.Controls.Add(_setupButton, 0, 0);
             headerPanel.Controls.Add(_mapButton, 1, 0);
-            headerPanel.Controls.Add(new Label { Text = "Distance", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(6, 0, 0, 0), AutoEllipsis = false }, 2, 0);
+            headerPanel.Controls.Add(distanceLabel, 2, 0);
             headerPanel.Controls.Add(_distanceCombo, 3, 0);
-            headerPanel.Controls.Add(new Label { Text = "AS", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(4, 0, 0, 0), AutoEllipsis = false }, 4, 0);
+            headerPanel.Controls.Add(airScoutFilterLabel, 4, 0);
             headerPanel.Controls.Add(_airScoutFilterCombo, 5, 0);
             headerPanel.Controls.Add(_airScoutAutoSortCheck, 6, 0);
             headerPanel.Controls.Add(_unworkedOnlyCheck, 7, 0);
-            headerPanel.Controls.Add(new Label { Text = "Room", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(6, 0, 0, 0), AutoEllipsis = false }, 9, 0);
+            headerPanel.Controls.Add(roomLabel, 9, 0);
             headerPanel.Controls.Add(_roomCombo, 10, 0);
             headerPanel.Controls.Add(_connectButton, 11, 0);
             headerPanel.Controls.Add(_disconnectButton, 12, 0);
@@ -620,6 +645,12 @@ namespace DXLog.net
             InstallContextMenuShield(_users, ref _usersContextMenuShield);
             _users.SelectedIndexChanged += delegate { UsersSelectedIndexChanged(); };
             _users.MouseClick += UsersMouseClick;
+            _users.MouseMove += UsersMouseMove;
+            _users.MouseLeave += delegate
+            {
+                _lastNameHoverCall = "";
+                if (_macroToolTip != null) _macroToolTip.Hide(_users);
+            };
 
             _messageSplit = new SplitContainer();
             _messageSplit.Dock = DockStyle.Fill;
@@ -664,10 +695,10 @@ namespace DXLog.net
             for (int i = 0; i < 4; i++) actionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
             actionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 2));
 
-            _sendButton = new Button { Text = "CQ", Dock = DockStyle.Fill, Margin = new Padding(3), Enabled = false };
-            _composeTargetLabel = new Label { Text = "CQ", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, BorderStyle = BorderStyle.FixedSingle, Padding = new Padding(6, 0, 2, 0), Margin = new Padding(3) };
-            _composeBox = new TextBox { Dock = DockStyle.Fill, Margin = new Padding(3), Enabled = false };
-            _cqButton = new Button { Text = "Send", Dock = DockStyle.Fill, Margin = new Padding(3), Enabled = false };
+            _sendButton = new Button { Text = "CQ", Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(3), Enabled = false };
+            _composeTargetLabel = new TextBox { Text = "CQ", Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(3), ReadOnly = true, TabStop = false };
+            _composeBox = new TextBox { Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(3), Enabled = false };
+            _cqButton = new Button { Text = "Send", Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(3), Enabled = false };
             actionPanel.Controls.Add(_sendButton, 0, 0);
             actionPanel.Controls.Add(_composeTargetLabel, 1, 0);
             actionPanel.Controls.Add(_composeBox, 2, 0);
@@ -675,14 +706,14 @@ namespace DXLog.net
 
             _macroToolTip = new ToolTip { AutoPopDelay = 12000, InitialDelay = 250, ReshowDelay = 100, ShowAlways = true };
             _macroToolTip.SetToolTip(_airScoutFilterCombo, "Show all stations, NOW only, or opportunities within the selected time");
-            _macroToolTip.SetToolTip(_airScoutAutoSortCheck, "Keep NOW and approaching stations at the top of the list");
+            _macroToolTip.SetToolTip(_airScoutAutoSortCheck, "Automatically keep NOW and approaching stations at the top of the list");
             _macroToolTip.SetToolTip(_unworkedOnlyCheck, "Show only stations not yet worked on the current DXLog band; combines with AS and distance filters");
             _airScoutAlertToolTip = new ToolTip { AutoPopDelay = 6000, InitialDelay = 0, ReshowDelay = 0, ShowAlways = true, IsBalloon = true, ToolTipTitle = "AirScout opportunity" };
             _macroButtons = new Button[4];
             for (int i = 0; i < _macroButtons.Length; i++)
             {
                 int macroIndex = i;
-                _macroButtons[i] = new Button { Text = "M" + (i + 1).ToString(), Dock = DockStyle.Fill, Margin = new Padding(3), Enabled = false, MinimumSize = new Size(54, 24) };
+                _macroButtons[i] = new Button { Text = "M" + (i + 1).ToString(), Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(3), Enabled = false, MinimumSize = new Size(54, 24) };
                 _macroButtons[i].Click += async delegate { await SendMacroClicked(macroIndex); };
                 _macroButtons[i].MouseEnter += delegate { UpdateMacroToolTip(macroIndex); };
                 _macroButtons[i].MouseUp += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Right) EditMacrosClicked(macroIndex); };
@@ -703,6 +734,31 @@ namespace DXLog.net
             statusPanel.Controls.Add(_statusLabel, 0, 0);
             statusPanel.Controls.Add(_airScoutStatusLabel, 1, 0);
             _layout.Controls.Add(statusPanel, 0, 3); _layout.SetColumnSpan(statusPanel, 12);
+
+            // Keep help available without adding more permanent text to the compact
+            // DXLog-style layout. Item-specific station tooltips still take priority
+            // over these general control descriptions.
+            _macroToolTip.SetToolTip(_setupButton, "Open KST, station, worked-band and AirScout settings");
+            _macroToolTip.SetToolTip(_mapButton, "Open the KST station and AirScout map");
+            _macroToolTip.SetToolTip(distanceLabel, "Maximum QRB shown in the station list and map");
+            _macroToolTip.SetToolTip(_distanceCombo, "Filter stations by distance from your QTH locator");
+            _macroToolTip.SetToolTip(airScoutFilterLabel, "AirScout opportunity filter");
+            _macroToolTip.SetToolTip(_airScoutFilterCombo, "Show all stations, NOW only, or opportunities within the selected time");
+            _macroToolTip.SetToolTip(_airScoutAutoSortCheck, "Keep NOW and approaching AirScout opportunities at the top of the station list");
+            _macroToolTip.SetToolTip(_unworkedOnlyCheck, "Show stations not yet worked on the current DXLog band; watched stations remain visible");
+            _macroToolTip.SetToolTip(roomLabel, "Current ON4KST chat room");
+            _macroToolTip.SetToolTip(_roomCombo, "Select the ON4KST room; the internal room number is hidden");
+            _macroToolTip.SetToolTip(_connectButton, "Connect to the selected ON4KST room");
+            _macroToolTip.SetToolTip(_disconnectButton, "Disconnect from ON4KST");
+            _macroToolTip.SetToolTip(_messages, "Current room messages. Select or double-click a message to work with its sender");
+            _macroToolTip.SetToolTip(_threadHeaderLabel, "Messages involving the station selected manually in the user list");
+            _macroToolTip.SetToolTip(_threadMessages, "Messages involving the selected station. Incoming messages do not change the selected map path");
+            _macroToolTip.SetToolTip(_sendButton, "Clear the directed target and return to CQ messaging");
+            _macroToolTip.SetToolTip(_composeTargetLabel, "Current message target: CQ or the selected callsign");
+            _macroToolTip.SetToolTip(_composeBox, "Type a custom KST message; press Enter or click Send");
+            _macroToolTip.SetToolTip(_cqButton, "Send the custom message to the displayed target");
+            _macroToolTip.SetToolTip(_statusLabel, "Bridge status. Right-click for performance and UI-latency diagnostics");
+            _macroToolTip.SetToolTip(_airScoutStatusLabel, "AirScout connection, scan progress and aircraft-feed health");
 
             Controls.Add(_layout);
 
@@ -1322,6 +1378,48 @@ namespace DXLog.net
             return false;
         }
 
+        private void UsersMouseMove(object sender, MouseEventArgs e)
+        {
+            if (_users == null || _macroToolTip == null) return;
+            try
+            {
+                ListViewHitTestInfo hit = _users.HitTest(e.Location);
+                if (hit == null || hit.Item == null || hit.SubItem == null)
+                {
+                    if (_lastNameHoverCall.Length > 0)
+                    {
+                        _lastNameHoverCall = "";
+                        _macroToolTip.Hide(_users);
+                    }
+                    return;
+                }
+
+                int subItemIndex = hit.Item.SubItems.IndexOf(hit.SubItem);
+                if (subItemIndex != UserColName)
+                {
+                    if (_lastNameHoverCall.Length > 0)
+                    {
+                        _lastNameHoverCall = "";
+                        _macroToolTip.Hide(_users);
+                    }
+                    return;
+                }
+
+                string call = CleanCall(hit.Item.Text);
+                if (String.Equals(call, _lastNameHoverCall, StringComparison.OrdinalIgnoreCase)) return;
+                _lastNameHoverCall = call;
+
+                // Rebuild first so the popup contains the full decoded name plus
+                // locator, activity, worked bands, notes and AirScout information.
+                UpdateAirScoutItemToolTip(hit.Item);
+                string tip = hit.Item.ToolTipText;
+                if (String.IsNullOrWhiteSpace(tip)) tip = hit.SubItem.Text ?? "";
+                _macroToolTip.Hide(_users);
+                _macroToolTip.Show(tip, _users, e.X + 18, e.Y + 18, 12000);
+            }
+            catch { }
+        }
+
         private void ShowUserContextMenu(Point screenPoint)
         {
             SuppressDxLogHostContextMenu();
@@ -1616,6 +1714,22 @@ namespace DXLog.net
         private void UsersColumnWidthChanging(object sender, ColumnWidthChangingEventArgs e)
         {
             if (_users == null || e.ColumnIndex < 0 || e.ColumnIndex >= _users.Columns.Count) return;
+            if (_adjustingUserColumns) return;
+
+            // The Name column is the only user-adjustable station-list column.
+            // All other fields have compact fixed widths so accidental header drags
+            // cannot disturb the contesting layout.
+            if (e.ColumnIndex == UserColName)
+            {
+                e.NewWidth = Math.Max(82, Math.Min(420, e.NewWidth));
+                if (_settings != null)
+                {
+                    _settings.UserNameColumnWidth = e.NewWidth;
+                    SchedulePersistentSave();
+                }
+                return;
+            }
+
             e.Cancel = true;
             e.NewWidth = _users.Columns[e.ColumnIndex].Width;
         }
@@ -1627,23 +1741,34 @@ namespace DXLog.net
             int callW = 86;
             int locW = 72;
             int qtfW = 52;
-            int qrbW = 66;
+            int qrbW = 72;
             const int asW = 54;
             const int activeW = 64;
             const int unreadW = 42;
             const int workedBandW = 44;
             int bandCount = Math.Max(0, _users.Columns.Count - UserColFirstWorkedBand);
             int fixedWidth = callW + locW + qtfW + qrbW + asW + activeW + unreadW + (bandCount * workedBandW) + 4;
-            int nameW = Math.Max(82, _users.ClientSize.Width - fixedWidth);
+            int automaticNameW = Math.Max(82, _users.ClientSize.Width - fixedWidth);
+            int nameW = _settings != null && _settings.UserNameColumnWidth >= 82
+                ? Math.Max(82, Math.Min(420, _settings.UserNameColumnWidth))
+                : automaticNameW;
 
-            int[] baseWidths = new int[] { callW, nameW, locW, qtfW, qrbW, asW, activeW, unreadW };
-            for (int i = 0; i < baseWidths.Length && i < _users.Columns.Count; i++)
+            _adjustingUserColumns = true;
+            try
             {
-                if (_users.Columns[i].Width != baseWidths[i]) _users.Columns[i].Width = baseWidths[i];
+                int[] baseWidths = new int[] { callW, nameW, locW, qtfW, qrbW, asW, activeW, unreadW };
+                for (int i = 0; i < baseWidths.Length && i < _users.Columns.Count; i++)
+                {
+                    if (_users.Columns[i].Width != baseWidths[i]) _users.Columns[i].Width = baseWidths[i];
+                }
+                for (int i = UserColFirstWorkedBand; i < _users.Columns.Count; i++)
+                {
+                    if (_users.Columns[i].Width != workedBandW) _users.Columns[i].Width = workedBandW;
+                }
             }
-            for (int i = UserColFirstWorkedBand; i < _users.Columns.Count; i++)
+            finally
             {
-                if (_users.Columns[i].Width != workedBandW) _users.Columns[i].Width = workedBandW;
+                _adjustingUserColumns = false;
             }
         }
 
@@ -1661,9 +1786,9 @@ namespace DXLog.net
                 _users.Columns.Clear();
                 _users.Columns.Add("Call", 86);
                 _users.Columns.Add("Name", 165);
-                _users.Columns.Add("Loc", 72);
+                _users.Columns.Add("QRA", 72);
                 _users.Columns.Add("QTF", 52);
-                _users.Columns.Add("QRB", 66);
+                _users.Columns.Add("QRB", 72);
                 _users.Columns.Add("AS", 54);
                 _users.Columns.Add("Active", 64);
                 _users.Columns.Add("Msg", 42);
@@ -3308,7 +3433,7 @@ namespace DXLog.net
         private void UpdateUserColumnHeaders()
         {
             if (_users == null || _users.Columns.Count < UserColFirstWorkedBand) return;
-            List<string> headers = new List<string> { "Call", "Name", "Loc", "QTF", "QRB", "AS", "Active", "Msg" };
+            List<string> headers = new List<string> { "Call", "Name", "QRA", "QTF", "QRB", "AS", "Active", "Msg" };
             foreach (KstWorkedBandOption band in GetVisibleWorkedBandOptions()) headers.Add(band.Header);
             for (int i = 0; i < headers.Count && i < _users.Columns.Count; i++)
             {
@@ -3938,7 +4063,7 @@ namespace DXLog.net
                 if (bearing == 360) bearing = 0;
                 int distance = (int)Math.Round(DistanceKm(here, there), 0);
                 qtf = bearing.ToString() + "\u00B0";
-                qrb = distance.ToString() + " km";
+                qrb = distance.ToString();
             }
             catch
             {
@@ -5769,6 +5894,7 @@ namespace DXLog.net
             private readonly Button _zoomOutButton;
             private readonly Button _zoomResetButton;
             private readonly Label _status;
+            private readonly ToolTip _toolTip;
             private readonly System.Windows.Forms.Timer _refreshTimer;
             private readonly Icon _mapIcon;
             private string _aircraftForCall = "";
@@ -5779,8 +5905,8 @@ namespace DXLog.net
                 _owner = owner;
                 Text = "KST Users Map";
                 StartPosition = FormStartPosition.CenterParent;
-                Size = new Size(900, 620);
-                MinimumSize = new Size(500, 360);
+                Size = new Size(1180, 620);
+                MinimumSize = new Size(1120, 360);
                 Font = owner._windowFont;
                 _mapIcon = CreateGlobeIcon();
                 if (_mapIcon != null) Icon = _mapIcon;
@@ -5788,27 +5914,33 @@ namespace DXLog.net
                 TableLayoutPanel layout = new TableLayoutPanel();
                 layout.Dock = DockStyle.Fill;
                 layout.RowCount = 3;
-                layout.ColumnCount = 8;
+                layout.ColumnCount = 9;
                 layout.Padding = new Padding(6);
                 layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
                 layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
                 layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+
+                // Keep every map command in its own non-shrinking column.  The
+                // flexible spacer is deliberately placed before Close so a
+                // narrow window can never collapse the AirScout controls
+                // underneath the Close button.
                 layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 95));
                 layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
                 layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
                 layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 85));
-                layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+                layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+                layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+                layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
                 layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-                layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 145));
                 layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
 
-                _refreshButton = new Button { Text = "Refresh", Dock = DockStyle.Fill };
-                _zoomInButton = new Button { Text = "Zoom +", Dock = DockStyle.Fill };
-                _zoomOutButton = new Button { Text = "Zoom -", Dock = DockStyle.Fill };
-                _zoomResetButton = new Button { Text = "Fit", Dock = DockStyle.Fill };
-                _turnRotator = new CheckBox { Text = "Turn rotator on click", Checked = owner._settings == null || owner._settings.TurnRotatorOnStationClick, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
-                _showAirScout = new CheckBox { Text = "Show AirScout path and aircraft", Checked = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
-                _showTrails = new CheckBox { Text = "Aircraft trails", Checked = owner._settings == null || owner._settings.ShowAircraftTrails, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+                _refreshButton = new Button { Text = "Refresh", Dock = DockStyle.Fill, Margin = new Padding(3) };
+                _zoomInButton = new Button { Text = "Zoom +", Dock = DockStyle.Fill, Margin = new Padding(3) };
+                _zoomOutButton = new Button { Text = "Zoom -", Dock = DockStyle.Fill, Margin = new Padding(3) };
+                _zoomResetButton = new Button { Text = "Fit", Dock = DockStyle.Fill, Margin = new Padding(3) };
+                _turnRotator = new CheckBox { Text = "Rotator", Checked = owner._settings == null || owner._settings.TurnRotatorOnStationClick, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(6, 0, 3, 0) };
+                _showAirScout = new CheckBox { Text = "Show AS", Checked = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(6, 0, 3, 0) };
+                _showTrails = new CheckBox { Text = "AS Trails", Checked = owner._settings == null || owner._settings.ShowAircraftTrails, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(6, 0, 3, 0) };
                 _status = new Label { Text = "Click a station to select it in DXLog", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
 
                 _canvas = new KstMapCanvas(owner);
@@ -5824,10 +5956,22 @@ namespace DXLog.net
                 layout.Controls.Add(_showTrails, 6, 0);
                 Button closeButton = new Button { Text = "Close", Dock = DockStyle.Fill };
                 closeButton.Click += delegate { Close(); };
-                layout.Controls.Add(closeButton, 7, 0);
-                layout.Controls.Add(_canvas, 0, 1); layout.SetColumnSpan(_canvas, 8);
-                layout.Controls.Add(_status, 0, 2); layout.SetColumnSpan(_status, 8);
+                layout.Controls.Add(closeButton, 8, 0);
+                layout.Controls.Add(_canvas, 0, 1); layout.SetColumnSpan(_canvas, 9);
+                layout.Controls.Add(_status, 0, 2); layout.SetColumnSpan(_status, 9);
                 Controls.Add(layout);
+
+                _toolTip = new ToolTip { AutoPopDelay = 12000, InitialDelay = 250, ReshowDelay = 100, ShowAlways = true };
+                _toolTip.SetToolTip(_refreshButton, "Refresh station markers, the selected path and matched aircraft now");
+                _toolTip.SetToolTip(_zoomInButton, "Zoom in around your home station");
+                _toolTip.SetToolTip(_zoomOutButton, "Zoom out around your home station");
+                _toolTip.SetToolTip(_zoomResetButton, "Fit the visible KST stations and selected AirScout path on the map");
+                _toolTip.SetToolTip(_turnRotator, "When enabled, a manual station click or Prepare contact loads the KST QRA into DXLog and turns the rotator");
+                _toolTip.SetToolTip(_showAirScout, "Show or hide the selected AirScout path and its matched aircraft. AirScout scanning continues while hidden");
+                _toolTip.SetToolTip(_showTrails, "Show or hide the approximately 90-second movement trail behind each matched aircraft; aircraft remain visible when trails are off");
+                _toolTip.SetToolTip(closeButton, "Close the KST map window");
+                _toolTip.SetToolTip(_canvas, "Click a station marker to select it; right-click a station marker for KST Bridge commands; drag to pan");
+                _toolTip.SetToolTip(_status, "Selected path, matched-aircraft count, live-aircraft count and feed status");
 
                 _refreshButton.Click += delegate { RefreshStations(); };
                 _zoomInButton.Click += delegate { _canvas.ZoomIn(); UpdateZoomStatus(); };
@@ -5864,6 +6008,7 @@ namespace DXLog.net
             protected override void OnFormClosed(FormClosedEventArgs e)
             {
                 if (_refreshTimer != null) _refreshTimer.Stop();
+                if (_toolTip != null) _toolTip.Dispose();
                 if (_mapIcon != null) _mapIcon.Dispose();
                 base.OnFormClosed(e);
             }
@@ -8183,6 +8328,7 @@ namespace DXLog.net
         public int AirScoutAlertMinutes = 5;
         public bool ShowAircraftTrails = true;
         public bool TurnRotatorOnStationClick = true;
+        public int UserNameColumnWidth = 0;
         public string[] WatchedCalls = new string[0];
         public string[] WorkedBandColumns = new string[] { "144", "432" };
         public string[] Macros = new string[]
@@ -8246,6 +8392,7 @@ namespace DXLog.net
                     else if (key == "airscoutalertminutes" && Int32.TryParse(val, out n)) s.AirScoutAlertMinutes = Math.Max(0, Math.Min(30, n));
                     else if (key == "showaircrafttrails") { bool b; if (Boolean.TryParse(val, out b)) s.ShowAircraftTrails = b; }
                     else if (key == "turnrotatoronstationclick") { bool b; if (Boolean.TryParse(val, out b)) s.TurnRotatorOnStationClick = b; }
+                    else if (key == "usernamecolumnwidth" && Int32.TryParse(val, out n)) s.UserNameColumnWidth = Math.Max(0, Math.Min(420, n));
                     else if (key == "watchedcalls") s.WatchedCalls = (val ?? "").Split(new char[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries);
                     else if (key == "workedbandcolumns" || key == "workedbands")
                     {
@@ -8315,6 +8462,7 @@ namespace DXLog.net
                 lines.Add("airscoutalertminutes=" + AirScoutAlertMinutes.ToString());
                 lines.Add("showaircrafttrails=" + ShowAircraftTrails.ToString());
                 lines.Add("turnrotatoronstationclick=" + TurnRotatorOnStationClick.ToString());
+                lines.Add("usernamecolumnwidth=" + UserNameColumnWidth.ToString());
                 lines.Add("watchedcalls=" + String.Join(",", WatchedCalls ?? new string[0]));
                 lines.Add("workedbandcolumns=" + String.Join(",", WorkedBandColumns ?? new string[0]));
                 lines.Add("macro1=" + (Macros != null && Macros.Length > 0 ? Macros[0] : ""));
@@ -8421,7 +8569,7 @@ namespace DXLog.net
             string[] watched = WatchedCalls == null ? new string[0] : (string[])WatchedCalls.Clone();
             Dictionary<string, string> notes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (StationNotes != null) foreach (KeyValuePair<string, string> kv in StationNotes) notes[kv.Key] = kv.Value;
-            return new KstSettings { Host = Host, Port = Port, Room = Room, DistanceFilterKm = DistanceFilterKm, Callsign = Callsign, Password = Password, Name = Name, OwnLocator = OwnLocator, AirScoutEnabled = AirScoutEnabled, AirScoutPort = AirScoutPort, AirScoutHttpPort = AirScoutHttpPort, AirScoutFilterMinutes = AirScoutFilterMinutes, AirScoutAutoSort = AirScoutAutoSort, UnworkedCurrentBandOnly = UnworkedCurrentBandOnly, AirScoutAlertsEnabled = AirScoutAlertsEnabled, AirScoutAlertMinutes = AirScoutAlertMinutes, ShowAircraftTrails = ShowAircraftTrails, TurnRotatorOnStationClick = TurnRotatorOnStationClick, WatchedCalls = watched, WorkedBandColumns = workedColumns, Macros = m, Macros50_70 = CloneMacroArray(Macros50_70), Macros144_432 = CloneMacroArray(Macros144_432), Macros1296 = CloneMacroArray(Macros1296), MacrosMicrowave = CloneMacroArray(MacrosMicrowave), MacrosEme = CloneMacroArray(MacrosEme), StationNotes = notes, WindowX = WindowX, WindowY = WindowY, WindowW = WindowW, WindowH = WindowH, TitleBarColor = TitleBarColor, ColorValues = colors };
+            return new KstSettings { Host = Host, Port = Port, Room = Room, DistanceFilterKm = DistanceFilterKm, Callsign = Callsign, Password = Password, Name = Name, OwnLocator = OwnLocator, AirScoutEnabled = AirScoutEnabled, AirScoutPort = AirScoutPort, AirScoutHttpPort = AirScoutHttpPort, AirScoutFilterMinutes = AirScoutFilterMinutes, AirScoutAutoSort = AirScoutAutoSort, UnworkedCurrentBandOnly = UnworkedCurrentBandOnly, AirScoutAlertsEnabled = AirScoutAlertsEnabled, AirScoutAlertMinutes = AirScoutAlertMinutes, ShowAircraftTrails = ShowAircraftTrails, TurnRotatorOnStationClick = TurnRotatorOnStationClick, UserNameColumnWidth = UserNameColumnWidth, WatchedCalls = watched, WorkedBandColumns = workedColumns, Macros = m, Macros50_70 = CloneMacroArray(Macros50_70), Macros144_432 = CloneMacroArray(Macros144_432), Macros1296 = CloneMacroArray(Macros1296), MacrosMicrowave = CloneMacroArray(MacrosMicrowave), MacrosEme = CloneMacroArray(MacrosEme), StationNotes = notes, WindowX = WindowX, WindowY = WindowY, WindowW = WindowW, WindowH = WindowH, TitleBarColor = TitleBarColor, ColorValues = colors };
         }
     }
 
@@ -8493,12 +8641,14 @@ namespace DXLog.net
         private NumericUpDown _airScoutAlertMinutes;
         private Label _airScoutAlertMinutesLabel;
         private CheckBox _showAircraftTrails;
+        private readonly ToolTip _toolTip;
         private readonly Dictionary<string, CheckBox> _workedBandChecks = new Dictionary<string, CheckBox>(StringComparer.OrdinalIgnoreCase);
         public KstSettings Settings { get; private set; }
 
         public KstSetupDialog(KstSettings settings)
         {
             Settings = settings.Clone();
+            _toolTip = new ToolTip { AutoPopDelay = 12000, InitialDelay = 250, ReshowDelay = 100, ShowAlways = true };
             Text = "KST Chat Bridge configuration";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterParent;
@@ -8605,6 +8755,25 @@ namespace DXLog.net
             Controls.Add(root);
             AcceptButton = ok;
             CancelButton = cancel;
+
+            _toolTip.SetToolTip(_host, "ON4KST classic telnet host name");
+            _toolTip.SetToolTip(_port, "ON4KST classic telnet port; normally 23000");
+            _toolTip.SetToolTip(_room, "Default ON4KST room shown in the main window");
+            _toolTip.SetToolTip(_call, "Your ON4KST username or amateur-radio callsign");
+            _toolTip.SetToolTip(_pass, "Your ON4KST password");
+            _toolTip.SetToolTip(_name, "Name sent to ON4KST when logging in");
+            _toolTip.SetToolTip(_locator, "Your own Maidenhead QTH locator used for QRB, QTF, map and AirScout calculations");
+            foreach (KeyValuePair<string, CheckBox> pair in _workedBandChecks)
+                _toolTip.SetToolTip(pair.Value, "Show a narrow worked-status column for " + pair.Value.Text + " in the KST user list");
+            _toolTip.SetToolTip(_airScoutEnabled, "Enable UDP path queries and HTTP aircraft data from the external AirScout program");
+            _toolTip.SetToolTip(_airScoutPort, "AirScout UDP server port used for path requests; normally 9872");
+            _toolTip.SetToolTip(_airScoutHttpPort, "AirScout HTTP server port used for live aircraft positions; normally 9880");
+            _toolTip.SetToolTip(_airScoutAlertsEnabled, "Notify when a visible or watched station enters the selected AirScout opportunity window");
+            _toolTip.SetToolTip(_airScoutAlertMinutes, "Alert threshold in minutes before an AirScout opportunity");
+            _toolTip.SetToolTip(_showAircraftTrails, "Show approximately 90 seconds of recent movement behind matched aircraft on the map");
+            _toolTip.SetToolTip(ok, "Save these settings and close the dialog");
+            _toolTip.SetToolTip(cancel, "Close without saving changes");
+            FormClosed += delegate { if (_toolTip != null) _toolTip.Dispose(); };
 
             ok.Click += delegate
             {
@@ -8740,6 +8909,12 @@ namespace DXLog.net
             Controls.Add(buttons);
             AcceptButton = ok;
             CancelButton = cancel;
+            ToolTip macroTip = new ToolTip { AutoPopDelay = 12000, InitialDelay = 250, ReshowDelay = 100, ShowAlways = true };
+            for (int i = 0; i < _boxes.Length; i++)
+                macroTip.SetToolTip(_boxes[i], "Edit M" + (i + 1).ToString() + ". Supported tokens include {CALL}, {MYCALL}, {FREQ}, {BAND}, {MODE}, {LOC}, {MYLOC}, {QTF}, {QRB}, {AS}, {AIRCRAFT} and {ASMIN}");
+            macroTip.SetToolTip(ok, "Save this macro profile");
+            macroTip.SetToolTip(cancel, "Close without saving macro changes");
+            FormClosed += delegate { macroTip.Dispose(); };
             ok.Click += delegate
             {
                 for (int i = 0; i < 4; i++) Macros[i] = _boxes[i].Text;
