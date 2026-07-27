@@ -1,6 +1,6 @@
 # DXLog KST Chat Bridge with AirScout
 
-**Version 2.5.0 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
+**Version 2.4.8 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
 
 <img width="1195" height="571" alt="image" src="https://github.com/user-attachments/assets/3710b697-7908-43cb-be6e-572356030a27" />
 />
@@ -8,12 +8,36 @@
 
 <img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/60e69401-749e-4d0d-9c24-7c0d39896375" />
 
+## What is new in v2.5.0
 
-# DXLog KST Chat Bridge with AirScout
+- **Uniform main toolbar:** corrected the clipped **Distance** caption and aligned Setup, Map, Distance, AS, Auto sort, Need, Room and the connection controls on one consistent row.
+- **Uniform Map toolbar:** renamed the map checkboxes to **Rotator**, **Show AS** and **AS Trails**, with equal-width control cells and consistent spacing.
+- **Adjustable Name column:** the station **Name** column is now the only resizable contact-list column. Its selected width is saved and restored.
+- **Fixed compact data columns:** Call, Loc, QTF, QRB, AS, Active, Msg and worked-band columns retain predictable fixed widths.
+- **Clear QRB units:** the heading is now **QRB km** and each row contains only the numeric distance, saving horizontal space.
+- **Full station popup:** hovering over a Name cell displays the complete decoded name together with the station locator, recent activity, worked state/bands, notes and AirScout details.
 
-**Version 2.4.3 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
+## What is new in v2.4.7
 
-## What is new in v2.4.3
+- Reworked the Map toolbar into fixed, non-shrinking command columns.
+- Added a flexible spacer before **Close**, keeping the button pinned to the right without covering **Show AirScout path and aircraft**.
+- Increased the Map window default and minimum width so all checkbox captions remain visible.
+- The map canvas and status line now span the revised nine-column toolbar layout.
+
+## What is new in v2.4.6
+
+- **Protected minimum window width:** the KST Chat Bridge can no longer be resized so narrowly that Auto sort/Need cover the Room selector or connection buttons. Saved narrow layouts are expanded safely when restored.
+- **Comprehensive interface tooltips:** added help text to the main toolbar, station and message areas, message controls, status lines, Setup dialog, macro editor and Map window.
+- **Clear map-control help:** the map tooltips now distinguish **Show AirScout path and aircraft** from **Aircraft trails**, explaining that trails can be hidden without hiding the aircraft or stopping the feed.
+- **Map minimum width:** prevents the Map toolbar controls and captions from being clipped into one another.
+
+- Corrected clipping in the top toolbar so **Distance**, **AS**, **Auto sort**, **Need**, and **Room** all display in full.
+- Rebalanced the fixed toolbar column widths without changing the overall window width or moving the Room/connection controls.
+
+- **Aligned main toolbar:** Setup, Map, Distance, AS, Auto sort, Need, Room, Connect and Disconnect now share one consistent vertical baseline using normal DXLog/WinForms control heights.
+- **Clear Auto sort label:** the previously abbreviated **Aut** option is now labelled **Auto sort**. When enabled, NOW and approaching AirScout opportunities are kept at the top of the station list.
+- **Aligned message controls:** the CQ button, To field, message entry box, Send button and M1–M4 buttons now share one vertical baseline.
+- **Matching To/message fields:** the To target is now displayed in a read-only text box matching the message entry field, eliminating the previous border and height mismatch.
 
 - **Unread directed-message indicator:** the new **Msg** column shows an orange unread count for directed KST messages. Selecting that station or its message clears the count.
 - **Per-band macro profiles:** M1–M4 are now stored separately for General, 50/70 MHz, 144/432 MHz, 1296 MHz, Microwave and EME operation. The active profile follows the current DXLog band/room automatically.
@@ -39,7 +63,7 @@ The bridge is supplied as source code and builds as an **x86 .NET Framework 4.8 
 ## Main features
 
 - ON4KST classic telnet connection and room selection.
-- Station list with callsign, name, locator, QTF, QRB, graphical AirScout opportunity, last KST activity, unread directed-message count and selectable DXLog worked-band columns.
+- Station list with callsign, name, QRA, QTF, QRB, graphical AirScout opportunity, last KST activity, unread directed-message count and selectable DXLog worked-band columns.
 - Optional **Need** filter for stations not yet worked on the current band.
 - Per-band M1–M4 macro profiles selected automatically from the current operating band.
 - Persistent station notes and one-click **Prepare contact** workflow.
@@ -67,12 +91,12 @@ The bridge is supplied as source code and builds as an **x86 .NET Framework 4.8 
 
 ## AirScout opportunity controls
 
-The top bar includes an **AS** filter and an **Auto** checkbox:
+The top bar includes an **AS** filter and an **Auto sort** checkbox:
 
 - **All** — show every station allowed by the distance filter.
 - **NOW** — show only current AirScout opportunities.
 - **≤5m / ≤10m / ≤20m** — show stations with an opportunity inside that time.
-- **Auto** — continually keeps NOW and approaching stations at the top.
+- **Auto sort** — continually keeps NOW and approaching stations at the top.
 
 Right-click a station and choose **Add to watchlist**. Watched stations:
 
