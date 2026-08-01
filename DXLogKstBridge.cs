@@ -1,4 +1,4 @@
-// DXLogKstBridge.cs
+﻿// DXLogKstBridge.cs
 // DXLog.net custom form for ON4KST using the classic interactive telnet feed.
 // This is based on the behaviour found in the dxKst custom form:
 //   host www.on4kst.info, port 23000, login prompt, password prompt, room prompt,
@@ -30,9 +30,9 @@ using DXLogDAL;
 [assembly: AssemblyTitle("DXLog KST Chat Bridge")]
 [assembly: AssemblyDescription("ON4KST chat, AirScout and DXLog integration")]
 [assembly: AssemblyProduct("DXLog KST Chat Bridge")]
-[assembly: AssemblyVersion("2.5.0.0")]
-[assembly: AssemblyFileVersion("2.5.0.0")]
-[assembly: AssemblyInformationalVersion("2.5")]
+[assembly: AssemblyVersion("2.5.1.0")]
+[assembly: AssemblyFileVersion("2.5.1.0")]
+[assembly: AssemblyInformationalVersion("2.5.1")]
 
 namespace DXLog.net
 {
@@ -40,7 +40,7 @@ namespace DXLog.net
     {
         private const int UserListPanelWidth = 620;
         private const int UserListPanelMinWidth = 600;
-        private const int MainWindowMinimumWidth = 1180;
+        private const int MainWindowMinimumWidth = 1360;
         private const int MainWindowMinimumHeight = 360;
         private const int UserColCall = 0;
         private const int UserColName = 1;
@@ -72,6 +72,8 @@ namespace DXLog.net
         private bool _applyingDistanceSelection;
         private ComboBox _airScoutFilterCombo;
         private bool _applyingAirScoutFilterSelection;
+        private ComboBox _aircraftFilterCombo;
+        private bool _applyingAircraftFilterSelection;
         private CheckBox _airScoutAutoSortCheck;
         private CheckBox _unworkedOnlyCheck;
         private bool _rebuildingVisibleUserList;
@@ -84,6 +86,11 @@ namespace DXLog.net
         private Button _setupButton;
         private Button _connectButton;
         private Button _disconnectButton;
+        private System.Windows.Forms.Timer _kstLoginTimeoutTimer;
+        private bool _kstLoginComplete;
+        private bool _kstDisconnectRequested;
+        private bool _kstFailureHandling;
+        private bool _kstFailurePopupShown;
         private SplitContainer _split;
         private SplitContainer _messageSplit;
         private ListView _users;
@@ -505,7 +512,8 @@ namespace DXLog.net
             _layout.Padding = new Padding(6);
             _layout.ColumnStyles.Clear();
             for (int i = 0; i < 12; i++) _layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 8.3333f));
-            _layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+            int topBarHeight = Math.Max(62, Font.Height + 38);
+            _layout.RowStyles.Add(new RowStyle(SizeType.Absolute, topBarHeight));
             _layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             _layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
             _layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
@@ -521,6 +529,11 @@ namespace DXLog.net
             _connectButton = new Button { Text = "Connect", Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(3) };
             _disconnectButton = new Button { Text = "Disconnect", Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(3), Enabled = false };
             _mapButton = new Button { Text = "Map", Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(3) };
+            Size topBarControlMinimum = new Size(0, Math.Max(24, Font.Height + 10));
+            _setupButton.MinimumSize = topBarControlMinimum;
+            _connectButton.MinimumSize = topBarControlMinimum;
+            _disconnectButton.MinimumSize = topBarControlMinimum;
+            _mapButton.MinimumSize = topBarControlMinimum;
             _roomCombo = new ComboBox
             {
                 Anchor = AnchorStyles.Left | AnchorStyles.Right,
@@ -554,6 +567,22 @@ namespace DXLog.net
                 Margin = new Padding(3)
             };
             PopulateAirScoutFilterCombo(_airScoutFilterCombo, _settings.AirScoutFilterMinutes);
+
+            _aircraftFilterCombo = new ComboBox
+            {
+                Anchor = AnchorStyles.Left | AnchorStyles.Right,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                FlatStyle = FlatStyle.Standard,
+                IntegralHeight = true,
+                TabStop = true,
+                Margin = new Padding(3)
+            };
+            PopulateAircraftFilterCombo(_aircraftFilterCombo, _settings.AircraftFilterMode);
+            _roomCombo.MinimumSize = topBarControlMinimum;
+            _distanceCombo.MinimumSize = topBarControlMinimum;
+            _airScoutFilterCombo.MinimumSize = topBarControlMinimum;
+            _aircraftFilterCombo.MinimumSize = topBarControlMinimum;
+
             _airScoutAutoSortCheck = new CheckBox
             {
                 Text = "Auto sort",
@@ -573,44 +602,99 @@ namespace DXLog.net
                 Margin = new Padding(3, 0, 3, 0)
             };
 
-            // DXLog-style fixed controls with a flexible centre spacer. All controls
-            // use their normal WinForms height and are vertically centred in one row,
-            // matching the alignment used by DXLog configuration dialogs.
+            // Keep related controls together in clearly separated DXLog-style groups.
+            // Each group uses the same height, border, internal spacing and alignment.
             TableLayoutPanel headerPanel = new TableLayoutPanel();
             headerPanel.Dock = DockStyle.Fill;
             headerPanel.Margin = new Padding(0);
             headerPanel.Padding = new Padding(0);
-            headerPanel.ColumnCount = 13;
+            headerPanel.ColumnCount = 5;
             headerPanel.RowCount = 1;
             headerPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 78));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 102));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300));
+            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
             headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 54));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 174));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
-            headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
-            Label distanceLabel = new Label { Text = "Distance", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(6, 0, 0, 0), AutoSize = false };
-            Label airScoutFilterLabel = new Label { Text = "AS", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(4, 0, 0, 0), AutoSize = false };
-            Label roomLabel = new Label { Text = "Room", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(6, 0, 0, 0), AutoSize = false };
-            headerPanel.Controls.Add(_setupButton, 0, 0);
-            headerPanel.Controls.Add(_mapButton, 1, 0);
-            headerPanel.Controls.Add(distanceLabel, 2, 0);
-            headerPanel.Controls.Add(_distanceCombo, 3, 0);
-            headerPanel.Controls.Add(airScoutFilterLabel, 4, 0);
-            headerPanel.Controls.Add(_airScoutFilterCombo, 5, 0);
-            headerPanel.Controls.Add(_airScoutAutoSortCheck, 6, 0);
-            headerPanel.Controls.Add(_unworkedOnlyCheck, 7, 0);
-            headerPanel.Controls.Add(roomLabel, 9, 0);
-            headerPanel.Controls.Add(_roomCombo, 10, 0);
-            headerPanel.Controls.Add(_connectButton, 11, 0);
-            headerPanel.Controls.Add(_disconnectButton, 12, 0);
+
+            GroupBox settingsGroup = new GroupBox { Text = "Settings", Dock = DockStyle.Fill, Margin = new Padding(4, 2, 4, 2), Padding = new Padding(6, 4, 6, 6) };
+            TableLayoutPanel settingsLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 1, Margin = new Padding(0), Padding = new Padding(0) };
+            settingsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            settingsLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            _setupButton.Dock = DockStyle.Fill;
+            _setupButton.Margin = new Padding(2);
+            settingsLayout.Controls.Add(_setupButton, 0, 0);
+            settingsGroup.Controls.Add(settingsLayout);
+
+            GroupBox mapDistanceGroup = new GroupBox { Text = "Map / Distance", Dock = DockStyle.Fill, Margin = new Padding(4, 2, 4, 2), Padding = new Padding(6, 4, 6, 6) };
+            TableLayoutPanel mapDistanceLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = new Padding(0), Padding = new Padding(0) };
+            mapDistanceLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
+            mapDistanceLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            mapDistanceLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            _mapButton.Dock = DockStyle.Fill;
+            _mapButton.Margin = new Padding(2);
+            _distanceCombo.Dock = DockStyle.Fill;
+            _distanceCombo.Margin = new Padding(2);
+            mapDistanceLayout.Controls.Add(_mapButton, 0, 0);
+            mapDistanceLayout.Controls.Add(_distanceCombo, 1, 0);
+            mapDistanceGroup.Controls.Add(mapDistanceLayout);
+
+            GroupBox airScoutGroup = new GroupBox { Text = "AirScout", Dock = DockStyle.Fill, Margin = new Padding(4, 2, 4, 2), Padding = new Padding(6, 4, 6, 6) };
+            TableLayoutPanel airScoutLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = new Padding(0), Padding = new Padding(0) };
+            airScoutLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
+            airScoutLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
+            airScoutLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            _airScoutFilterCombo.Dock = DockStyle.Fill;
+            _airScoutFilterCombo.Margin = new Padding(2);
+            _aircraftFilterCombo.Dock = DockStyle.Fill;
+            _aircraftFilterCombo.Margin = new Padding(2);
+            airScoutLayout.Controls.Add(_airScoutFilterCombo, 0, 0);
+            airScoutLayout.Controls.Add(_aircraftFilterCombo, 1, 0);
+            airScoutGroup.Controls.Add(airScoutLayout);
+
+            GroupBox listFiltersGroup = new GroupBox { Text = "List filters", Dock = DockStyle.Fill, Margin = new Padding(4, 2, 4, 2), Padding = new Padding(6, 4, 6, 6) };
+            TableLayoutPanel listFiltersLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = new Padding(0), Padding = new Padding(0) };
+            listFiltersLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
+            listFiltersLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
+            listFiltersLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            _airScoutAutoSortCheck.Dock = DockStyle.None;
+            _airScoutAutoSortCheck.Anchor = AnchorStyles.Left;
+            _airScoutAutoSortCheck.AutoSize = true;
+            _airScoutAutoSortCheck.CheckAlign = ContentAlignment.MiddleLeft;
+            _airScoutAutoSortCheck.TextAlign = ContentAlignment.MiddleLeft;
+            _airScoutAutoSortCheck.Margin = new Padding(8, 0, 2, 0);
+            _unworkedOnlyCheck.Dock = DockStyle.None;
+            _unworkedOnlyCheck.Anchor = AnchorStyles.Left;
+            _unworkedOnlyCheck.AutoSize = true;
+            _unworkedOnlyCheck.CheckAlign = ContentAlignment.MiddleLeft;
+            _unworkedOnlyCheck.TextAlign = ContentAlignment.MiddleLeft;
+            _unworkedOnlyCheck.Margin = new Padding(6, 0, 2, 0);
+            listFiltersLayout.Controls.Add(_airScoutAutoSortCheck, 0, 0);
+            listFiltersLayout.Controls.Add(_unworkedOnlyCheck, 1, 0);
+            listFiltersGroup.Controls.Add(listFiltersLayout);
+
+            GroupBox connectionGroup = new GroupBox { Text = "KST Chat", Dock = DockStyle.Fill, Margin = new Padding(4, 2, 4, 2), Padding = new Padding(6, 4, 6, 6) };
+            TableLayoutPanel connectionLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = new Padding(0), Padding = new Padding(0) };
+            connectionLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            connectionLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 78));
+            connectionLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
+            connectionLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            _roomCombo.Dock = DockStyle.Fill;
+            _roomCombo.Margin = new Padding(2);
+            _connectButton.Dock = DockStyle.Fill;
+            _connectButton.Margin = new Padding(2);
+            _disconnectButton.Dock = DockStyle.Fill;
+            _disconnectButton.Margin = new Padding(2);
+            connectionLayout.Controls.Add(_roomCombo, 0, 0);
+            connectionLayout.Controls.Add(_connectButton, 1, 0);
+            connectionLayout.Controls.Add(_disconnectButton, 2, 0);
+            connectionGroup.Controls.Add(connectionLayout);
+
+            headerPanel.Controls.Add(settingsGroup, 0, 0);
+            headerPanel.Controls.Add(mapDistanceGroup, 1, 0);
+            headerPanel.Controls.Add(airScoutGroup, 2, 0);
+            headerPanel.Controls.Add(listFiltersGroup, 3, 0);
+            headerPanel.Controls.Add(connectionGroup, 4, 0);
             _layout.Controls.Add(headerPanel, 0, 0); _layout.SetColumnSpan(headerPanel, 12);
 
             _split = new SplitContainer();
@@ -706,6 +790,7 @@ namespace DXLog.net
 
             _macroToolTip = new ToolTip { AutoPopDelay = 12000, InitialDelay = 250, ReshowDelay = 100, ShowAlways = true };
             _macroToolTip.SetToolTip(_airScoutFilterCombo, "Show all stations, NOW only, or opportunities within the selected time");
+            _macroToolTip.SetToolTip(_aircraftFilterCombo, "Limit AirScout opportunities and map aircraft by AirScout size or classified passenger/cargo type");
             _macroToolTip.SetToolTip(_airScoutAutoSortCheck, "Automatically keep NOW and approaching stations at the top of the list");
             _macroToolTip.SetToolTip(_unworkedOnlyCheck, "Show only stations not yet worked on the current DXLog band; combines with AS and distance filters");
             _airScoutAlertToolTip = new ToolTip { AutoPopDelay = 6000, InitialDelay = 0, ReshowDelay = 0, ShowAlways = true, IsBalloon = true, ToolTipTitle = "AirScout opportunity" };
@@ -740,16 +825,27 @@ namespace DXLog.net
             // over these general control descriptions.
             _macroToolTip.SetToolTip(_setupButton, "Open KST, station, worked-band and AirScout settings");
             _macroToolTip.SetToolTip(_mapButton, "Open the KST station and AirScout map");
-            _macroToolTip.SetToolTip(distanceLabel, "Maximum QRB shown in the station list and map");
             _macroToolTip.SetToolTip(_distanceCombo, "Filter stations by distance from your QTH locator");
-            _macroToolTip.SetToolTip(airScoutFilterLabel, "AirScout opportunity filter");
             _macroToolTip.SetToolTip(_airScoutFilterCombo, "Show all stations, NOW only, or opportunities within the selected time");
+            _macroToolTip.SetToolTip(_aircraftFilterCombo, "All; AirScout XX/XXX; XXX only; classified passenger/cargo; or classified cargo only");
             _macroToolTip.SetToolTip(_airScoutAutoSortCheck, "Keep NOW and approaching AirScout opportunities at the top of the station list");
             _macroToolTip.SetToolTip(_unworkedOnlyCheck, "Show stations not yet worked on the current DXLog band; watched stations remain visible");
-            _macroToolTip.SetToolTip(roomLabel, "Current ON4KST chat room");
             _macroToolTip.SetToolTip(_roomCombo, "Select the ON4KST room; the internal room number is hidden");
             _macroToolTip.SetToolTip(_connectButton, "Connect to the selected ON4KST room");
             _macroToolTip.SetToolTip(_disconnectButton, "Disconnect from ON4KST");
+
+            _kstLoginTimeoutTimer = new System.Windows.Forms.Timer();
+            _kstLoginTimeoutTimer.Interval = 20000;
+            _kstLoginTimeoutTimer.Tick += delegate
+            {
+                _kstLoginTimeoutTimer.Stop();
+                if (!_kstLoginComplete && !_kstDisconnectRequested)
+                {
+                    HandleKstConnectionFailure(
+                        "KST login timed out",
+                        "ON4KST did not complete the login within 20 seconds.\r\n\r\nCheck the selected room, callsign, password and internet connection, then try Connect again.");
+                }
+            };
             _macroToolTip.SetToolTip(_messages, "Current room messages. Select or double-click a message to work with its sender");
             _macroToolTip.SetToolTip(_threadHeaderLabel, "Messages involving the station selected manually in the user list");
             _macroToolTip.SetToolTip(_threadMessages, "Messages involving the selected station. Incoming messages do not change the selected map path");
@@ -785,6 +881,7 @@ namespace DXLog.net
             _setupButton.Click += delegate { SetupClicked(); };
             _distanceCombo.SelectionChangeCommitted += delegate { if (!_applyingDistanceSelection) ApplyDistanceFilterSelection(); };
             _airScoutFilterCombo.SelectionChangeCommitted += delegate { if (!_applyingAirScoutFilterSelection) ApplyAirScoutFilterSelection(); };
+            _aircraftFilterCombo.SelectionChangeCommitted += delegate { if (!_applyingAircraftFilterSelection) ApplyAircraftFilterSelection(); };
             _airScoutAutoSortCheck.CheckedChanged += delegate
             {
                 if (_settings == null) return;
@@ -807,6 +904,7 @@ namespace DXLog.net
             // drop-down lists remain reliable while the bridge is hosted inside DXLog.
             HookReliableDropDown(_distanceCombo);
             HookReliableDropDown(_airScoutFilterCombo);
+            HookReliableDropDown(_aircraftFilterCombo);
             HookReliableDropDown(_roomCombo);
             _mapButton.Click += delegate { ShowMapWindow(); };
             _connectButton.Click += async delegate { await ConnectClicked(); };
@@ -1716,12 +1814,20 @@ namespace DXLog.net
             if (_users == null || e.ColumnIndex < 0 || e.ColumnIndex >= _users.Columns.Count) return;
             if (_adjustingUserColumns) return;
 
-            // The Name column is the only user-adjustable station-list column.
-            // All other fields have compact fixed widths so accidental header drags
-            // cannot disturb the contesting layout.
+            // The Name column may be adjusted, but never beyond the width that keeps
+            // every station-list column inside the visible left pane.  This prevents
+            // a saved or manually enlarged Name column from creating a horizontal bar.
             if (e.ColumnIndex == UserColName)
             {
-                e.NewWidth = Math.Max(82, Math.Min(420, e.NewWidth));
+                int available = Math.Max(180, _users.ClientSize.Width - 10);
+                int otherWidth = 0;
+                for (int i = 0; i < _users.Columns.Count; i++)
+                {
+                    if (i != UserColName) otherWidth += _users.Columns[i].Width;
+                }
+
+                int maximumNameWidth = Math.Max(20, available - otherWidth);
+                e.NewWidth = Math.Max(20, Math.Min(Math.Min(420, maximumNameWidth), e.NewWidth));
                 if (_settings != null)
                 {
                     _settings.UserNameColumnWidth = e.NewWidth;
@@ -1738,32 +1844,70 @@ namespace DXLog.net
         {
             if (_users == null || _users.Columns.Count < UserColFirstWorkedBand) return;
 
-            int callW = 86;
-            int locW = 72;
-            int qtfW = 52;
-            int qrbW = 72;
-            const int asW = 54;
-            const int activeW = 64;
-            const int unreadW = 42;
-            const int workedBandW = 44;
+            // The complete station row must always fit the visible left pane.  Start
+            // with compact preferred widths and give all remaining space to Name.
+            // When many worked-band columns are enabled, scale every column together
+            // rather than allowing Windows to add a horizontal scrollbar.
+            int available = Math.Max(180, _users.ClientSize.Width - 10);
             int bandCount = Math.Max(0, _users.Columns.Count - UserColFirstWorkedBand);
-            int fixedWidth = callW + locW + qtfW + qrbW + asW + activeW + unreadW + (bandCount * workedBandW) + 4;
-            int automaticNameW = Math.Max(82, _users.ClientSize.Width - fixedWidth);
-            int nameW = _settings != null && _settings.UserNameColumnWidth >= 82
-                ? Math.Max(82, Math.Min(420, _settings.UserNameColumnWidth))
-                : automaticNameW;
+
+            int[] widths = new int[_users.Columns.Count];
+            widths[UserColCall] = 82;
+            widths[UserColName] = 64;
+            widths[UserColLocator] = 64;
+            widths[UserColQtf] = 46;
+            widths[UserColQrb] = 58;
+            widths[UserColAirScout] = 46;
+            widths[UserColActive] = 56;
+            widths[UserColUnread] = 38;
+            for (int i = UserColFirstWorkedBand; i < widths.Length; i++) widths[i] = 36;
+
+            int fixedWithoutName = 0;
+            for (int i = 0; i < widths.Length; i++)
+            {
+                if (i != UserColName) fixedWithoutName += widths[i];
+            }
+
+            if (fixedWithoutName + widths[UserColName] <= available)
+            {
+                // Fill the pane exactly; no unused strip and no horizontal scroll.
+                widths[UserColName] = Math.Max(64, available - fixedWithoutName);
+            }
+            else
+            {
+                int preferredTotal = fixedWithoutName + widths[UserColName];
+                double scale = preferredTotal > 0 ? (double)available / preferredTotal : 1.0;
+                int scaledTotal = 0;
+                for (int i = 0; i < widths.Length; i++)
+                {
+                    widths[i] = Math.Max(20, (int)Math.Floor(widths[i] * scale));
+                    scaledTotal += widths[i];
+                }
+
+                // If the hard minimums pushed the result a few pixels over, remove
+                // them from the widest columns until the exact available width fits.
+                while (scaledTotal > available)
+                {
+                    int widest = -1;
+                    for (int i = 0; i < widths.Length; i++)
+                    {
+                        if (widths[i] > 20 && (widest < 0 || widths[i] > widths[widest])) widest = i;
+                    }
+                    if (widest < 0) break;
+                    widths[widest]--;
+                    scaledTotal--;
+                }
+
+                if (scaledTotal < available)
+                    widths[UserColName] += available - scaledTotal;
+            }
 
             _adjustingUserColumns = true;
             try
             {
-                int[] baseWidths = new int[] { callW, nameW, locW, qtfW, qrbW, asW, activeW, unreadW };
-                for (int i = 0; i < baseWidths.Length && i < _users.Columns.Count; i++)
+                for (int i = 0; i < widths.Length && i < _users.Columns.Count; i++)
                 {
-                    if (_users.Columns[i].Width != baseWidths[i]) _users.Columns[i].Width = baseWidths[i];
-                }
-                for (int i = UserColFirstWorkedBand; i < _users.Columns.Count; i++)
-                {
-                    if (_users.Columns[i].Width != workedBandW) _users.Columns[i].Width = workedBandW;
+                    if (_users.Columns[i].Width != widths[i]) _users.Columns[i].Width = widths[i];
                 }
             }
             finally
@@ -2410,6 +2554,44 @@ namespace DXLog.net
             UpdateStatus("AirScout filter: " + option.ToString());
         }
 
+        private void PopulateAircraftFilterCombo(ComboBox combo, int selectedMode)
+        {
+            if (combo == null) return;
+            _applyingAircraftFilterSelection = true;
+            try
+            {
+                combo.BeginUpdate();
+                combo.Items.Clear();
+                foreach (KstAircraftFilterOption option in KstAircraftFilterOption.GetOptions())
+                {
+                    combo.Items.Add(option);
+                    if ((int)option.Mode == selectedMode) combo.SelectedItem = option;
+                }
+                if (combo.SelectedIndex < 0) combo.SelectedIndex = 0;
+            }
+            finally
+            {
+                combo.EndUpdate();
+                _applyingAircraftFilterSelection = false;
+            }
+        }
+
+        private void ApplyAircraftFilterSelection()
+        {
+            KstAircraftFilterOption option = _aircraftFilterCombo != null ? _aircraftFilterCombo.SelectedItem as KstAircraftFilterOption : null;
+            if (option == null || _settings == null) return;
+            int newMode = (int)option.Mode;
+            if (_settings.AircraftFilterMode == newMode) return;
+
+            _settings.AircraftFilterMode = newMode;
+            _settings.Save();
+            BeginRefreshAirScoutLivePlanes(true);
+            RefreshAllAirScoutCells();
+            RebuildVisibleUserList();
+            RefreshMapAircraftOnly();
+            UpdateStatus("Aircraft filter: " + option.ToString());
+        }
+
         private void LoadWatchedCallsFromSettings()
         {
             _watchedCalls.Clear();
@@ -2470,13 +2652,187 @@ namespace DXLog.net
             catch { return false; }
         }
 
+        private AirScoutPlaneInfo GetBestFilteredAirScoutPlane(AirScoutPathResult result)
+        {
+            if (result == null || result.Planes == null) return null;
+            AirScoutPlaneInfo best = null;
+            foreach (AirScoutPlaneInfo plane in result.Planes)
+            {
+                if (plane == null || plane.Mins >= 30 || !MatchesAircraftFilter(plane)) continue;
+                if (best == null || plane.Potential > best.Potential ||
+                    (plane.Potential == best.Potential && plane.IntQRB < best.IntQRB))
+                    best = plane;
+            }
+            return best;
+        }
+
+        private bool MatchesAircraftFilter(AirScoutPlaneInfo candidate)
+        {
+            if (candidate == null) return false;
+            KstAircraftFilterMode mode = _settings == null
+                ? KstAircraftFilterMode.All
+                : KstAircraftFilterOption.NormalizeMode(_settings.AircraftFilterMode);
+            if (mode == KstAircraftFilterMode.All) return true;
+
+            int sizeRank = GetAirScoutSizeRank(candidate.Category);
+            if (mode == KstAircraftFilterMode.XXAndXXX) return sizeRank >= 2;
+            if (mode == KstAircraftFilterMode.XXXOnly) return sizeRank >= 3;
+
+            AirScoutLivePlane live;
+            TryGetLivePlaneForAirScoutCandidate(candidate.Call, out live);
+            KstAircraftTrafficClass trafficClass = ClassifyAircraftTraffic(live, candidate);
+            if (mode == KstAircraftFilterMode.PassengerOrCargo)
+                return sizeRank >= 2 && (trafficClass == KstAircraftTrafficClass.Passenger || trafficClass == KstAircraftTrafficClass.Cargo);
+            if (mode == KstAircraftFilterMode.CargoOnly)
+                return trafficClass == KstAircraftTrafficClass.Cargo;
+            return true;
+        }
+
+        private static int GetAirScoutSizeRank(string category)
+        {
+            string text = (category ?? "").Trim().ToUpperInvariant();
+            if (text.Length == 0) return 0;
+            if (text.IndexOf("XXX", StringComparison.Ordinal) >= 0) return 3;
+            if (text.IndexOf("XX", StringComparison.Ordinal) >= 0) return 2;
+            if (text.IndexOf("X", StringComparison.Ordinal) >= 0) return 1;
+            if (text.IndexOf("HEAVY", StringComparison.Ordinal) >= 0 || text == "H") return 3;
+            if (text.IndexOf("LARGE", StringComparison.Ordinal) >= 0 || text == "L") return 2;
+            int numeric;
+            if (Int32.TryParse(text, out numeric)) return Math.Max(0, Math.Min(3, numeric));
+            return 0;
+        }
+
+        private static string GetAirScoutSizeText(AirScoutPlaneInfo candidate)
+        {
+            if (candidate == null) return "";
+            string category = (candidate.Category ?? "").Trim();
+            int rank = GetAirScoutSizeRank(category);
+            if (rank == 3) return "XXX";
+            if (rank == 2) return "XX";
+            if (rank == 1) return "X";
+            return category;
+        }
+
+        private static KstAircraftTrafficClass ClassifyAircraftTraffic(AirScoutLivePlane live, AirScoutPlaneInfo candidate)
+        {
+            string type = NormalizeAircraftId(live == null ? "" : live.Type);
+            string flight = NormalizeAircraftId(live == null ? "" : live.Flight);
+            string call = NormalizeAircraftId(live == null ? (candidate == null ? "" : candidate.Call) : live.Call);
+            string combined = flight + " " + call;
+
+            if (IsKnownCargoAircraftType(type) || IsKnownCargoCallsign(combined))
+                return KstAircraftTrafficClass.Cargo;
+            if (IsKnownPassengerAircraftType(type))
+                return KstAircraftTrafficClass.Passenger;
+
+            // A normal airline ICAO callsign is usually three letters followed by
+            // digits. This is deliberately a fallback only; known cargo prefixes
+            // and freighter type variants above take priority.
+            if (Regex.IsMatch(flight, @"^[A-Z]{3}[0-9]") || Regex.IsMatch(call, @"^[A-Z]{3}[0-9]"))
+                return KstAircraftTrafficClass.Passenger;
+            return KstAircraftTrafficClass.Unknown;
+        }
+
+        private static bool IsKnownCargoCallsign(string value)
+        {
+            string text = NormalizeAircraftId(value);
+            if (text.Length < 3) return false;
+            string[] prefixes = new string[]
+            {
+                "FDX", "UPS", "BCS", "DHK", "DHA", "CLX", "ICL", "BOX", "GTI",
+                "ABW", "CKS", "NCA", "PAC", "MPH", "MNB", "SRR", "TAY", "ABR",
+                "ATG", "AJT", "CLU", "CGF", "CMB", "ACP", "KALCARGO"
+            };
+            foreach (string prefix in prefixes)
+                if (text.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        private static bool IsKnownCargoAircraftType(string type)
+        {
+            string t = NormalizeAircraftId(type);
+            if (t.Length == 0) return false;
+            string[] exact = new string[]
+            {
+                "B74F", "B744F", "B748F", "B77F", "B763F", "B762F", "B752F",
+                "B738F", "B734F", "B733F", "B732F", "B722F", "A306F", "A30BF",
+                "A332F", "A333F", "MD11F", "DC10F", "AT72F", "AT76F", "IL76",
+                "AN12", "AN26", "AN72", "AN124", "AN225"
+            };
+            foreach (string code in exact)
+                if (String.Equals(t, code, StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.EndsWith("F", StringComparison.OrdinalIgnoreCase) &&
+                (t.StartsWith("B", StringComparison.OrdinalIgnoreCase) ||
+                 t.StartsWith("A", StringComparison.OrdinalIgnoreCase) ||
+                 t.StartsWith("MD", StringComparison.OrdinalIgnoreCase) ||
+                 t.StartsWith("DC", StringComparison.OrdinalIgnoreCase) ||
+                 t.StartsWith("AT", StringComparison.OrdinalIgnoreCase)))
+                return true;
+            return false;
+        }
+
+        private static bool IsKnownPassengerAircraftType(string type)
+        {
+            string t = NormalizeAircraftId(type);
+            if (t.Length == 0 || IsKnownCargoAircraftType(t)) return false;
+            return Regex.IsMatch(t, @"^(A2|A3|B7|B3|E1|E2|CRJ|DH8|AT4|AT7|F70|F100|MD8|MD9|BCS)");
+        }
+
+        private static string GetAircraftTrafficClassText(KstAircraftTrafficClass trafficClass)
+        {
+            if (trafficClass == KstAircraftTrafficClass.Cargo) return "Cargo";
+            if (trafficClass == KstAircraftTrafficClass.Passenger) return "Passenger";
+            return "Unknown";
+        }
+
+        private static string GetAircraftModelName(string type)
+        {
+            string t = NormalizeAircraftId(type);
+            switch (t)
+            {
+                case "A388": return "Airbus A380-800";
+                case "A359": return "Airbus A350-900";
+                case "A35K": return "Airbus A350-1000";
+                case "A339": return "Airbus A330-900neo";
+                case "A333": return "Airbus A330-300";
+                case "A332": return "Airbus A330-200";
+                case "A321": return "Airbus A321";
+                case "A21N": return "Airbus A321neo";
+                case "A320": return "Airbus A320";
+                case "A20N": return "Airbus A320neo";
+                case "A319": return "Airbus A319";
+                case "B748": return "Boeing 747-8";
+                case "B744": return "Boeing 747-400";
+                case "B77W": return "Boeing 777-300ER";
+                case "B773": return "Boeing 777-300";
+                case "B772": return "Boeing 777-200";
+                case "B77L": return "Boeing 777-200LR";
+                case "B77F": return "Boeing 777 Freighter";
+                case "B78X": return "Boeing 787-10";
+                case "B789": return "Boeing 787-9";
+                case "B788": return "Boeing 787-8";
+                case "B763": return "Boeing 767-300";
+                case "B752": return "Boeing 757-200";
+                case "B739": return "Boeing 737-900";
+                case "B738": return "Boeing 737-800";
+                case "B38M": return "Boeing 737 MAX 8";
+                case "B39M": return "Boeing 737 MAX 9";
+                case "MD11": return "McDonnell Douglas MD-11";
+                case "MD11F": return "McDonnell Douglas MD-11F";
+                default: return "";
+            }
+        }
+
         private bool MatchesAirScoutOpportunityFilter(KstUserInfo user)
         {
-            if (user == null || _settings == null || !_settings.AirScoutEnabled || _settings.AirScoutFilterMinutes < 0 || IsWatchedCall(user.Call)) return true;
+            if (user == null || _settings == null || !_settings.AirScoutEnabled || IsWatchedCall(user.Call)) return true;
+            if (_settings.AirScoutFilterMinutes < 0 && _settings.AircraftFilterMode == (int)KstAircraftFilterMode.All) return true;
+
             AirScoutPathResult result;
             if (!_airScoutResults.TryGetValue(CleanCall(user.Call), out result) || result == null) return false;
-            AirScoutPlaneInfo best = result.GetBestPlane();
+            AirScoutPlaneInfo best = GetBestFilteredAirScoutPlane(result);
             if (best == null) return false;
+            if (_settings.AirScoutFilterMinutes < 0) return true;
             if (_settings.AirScoutFilterMinutes == 0) return best.Mins <= 0;
             return best.Mins >= 0 && best.Mins <= _settings.AirScoutFilterMinutes;
         }
@@ -2785,7 +3141,9 @@ namespace DXLog.net
             PopulateRoomCombo(_roomCombo, _settings.Room);
             PopulateDistanceCombo(_distanceCombo, _settings.DistanceFilterKm);
             PopulateAirScoutFilterCombo(_airScoutFilterCombo, _settings.AirScoutFilterMinutes);
+            PopulateAircraftFilterCombo(_aircraftFilterCombo, _settings.AircraftFilterMode);
             if (_airScoutFilterCombo != null) _airScoutFilterCombo.Enabled = _settings.AirScoutEnabled;
+            if (_aircraftFilterCombo != null) _aircraftFilterCombo.Enabled = _settings.AirScoutEnabled;
             if (_airScoutAutoSortCheck != null) { _airScoutAutoSortCheck.Checked = _settings.AirScoutAutoSort; _airScoutAutoSortCheck.Enabled = _settings.AirScoutEnabled; }
             if (_unworkedOnlyCheck != null) _unworkedOnlyCheck.Checked = _settings.UnworkedCurrentBandOnly;
             LoadWatchedCallsFromSettings();
@@ -2822,7 +3180,14 @@ namespace DXLog.net
                 _pendingUserSnapshot.Clear();
                 _refreshingUserList = false;
                 _userMap.Clear();
-                SetConnectionUi(false);
+
+                _kstLoginComplete = false;
+                _kstDisconnectRequested = false;
+                _kstFailureHandling = false;
+                _kstFailurePopupShown = false;
+                if (_kstLoginTimeoutTimer != null) _kstLoginTimeoutTimer.Stop();
+                DisposeKstClient();
+                SetConnectingUi();
 
                 _kst = new TelnetKstClient(_settings.Host, _settings.Port, _settings.Callsign, _settings.Password, _settings.Room);
                 _kst.LineReceived += OnKstLineReceived;
@@ -2830,30 +3195,33 @@ namespace DXLog.net
                 _kst.LoggedIn += OnKstLoggedIn;
 
                 await _kst.ConnectAsync();
-                SetConnectionUi(true);
-                UpdateStatus("Connected - " + KstRoomTitles.GetTitle(_settings.Room) + " - waiting for ON4KST login prompts");
+                if (_kst == null || _kstDisconnectRequested) return;
+                if (!_kstLoginComplete)
+                {
+                    if (_kstLoginTimeoutTimer != null) _kstLoginTimeoutTimer.Start();
+                    UpdateStatus("Connected to ON4KST - waiting for login to complete");
+                }
             }
             catch (Exception ex)
             {
-                SetConnectionUi(false);
-                UpdateStatus("Connect failed: " + ex.Message);
-                if (_mainForm != null) _mainForm.SetMainStatusText("KST connect failed: " + ex.Message);
+                HandleKstConnectionFailure(
+                    "KST connection failed: " + ex.Message,
+                    "The bridge could not connect to ON4KST.\r\n\r\n" + ex.Message + "\r\n\r\nCheck the internet connection and KST settings, then try Connect again.");
             }
         }
 
         private void DisconnectClicked()
         {
+            _kstDisconnectRequested = true;
+            _kstLoginComplete = false;
+            if (_kstLoginTimeoutTimer != null) _kstLoginTimeoutTimer.Stop();
             try
             {
                 if (_kst != null && _kst.IsConnected) _kst.SendCommandAsync("/QUIT");
             }
             catch { }
 
-            if (_kst != null)
-            {
-                _kst.Dispose();
-                _kst = null;
-            }
+            DisposeKstClient();
             _userRefreshTimer.Stop();
             SetConnectionUi(false);
             UpdateStatus("Disconnected");
@@ -3029,6 +3397,12 @@ namespace DXLog.net
         {
             SafeUi(async delegate
             {
+                if (_kst == null || !Object.ReferenceEquals(sender, _kst)) return;
+                _kstLoginComplete = true;
+                _kstDisconnectRequested = false;
+                if (_kstLoginTimeoutTimer != null) _kstLoginTimeoutTimer.Stop();
+                SetConnectionUi(true);
+                UpdateStatus("Logged in - " + KstRoomTitles.GetTitle(_settings.Room));
                 _userRefreshTimer.Start();
                 await ApplyOwnProfileToKst(null);
                 await RefreshUsers();
@@ -3037,12 +3411,45 @@ namespace DXLog.net
 
         private void OnKstStatusChanged(object sender, string status)
         {
-            SafeUi(delegate { UpdateStatus(status); });
+            SafeUi(delegate
+            {
+                if (_kst != null && sender != null && !Object.ReferenceEquals(sender, _kst)) return;
+                UpdateStatus(status);
+                if (_kstDisconnectRequested || _kstFailureHandling || String.IsNullOrWhiteSpace(status)) return;
+
+                if (!_kstLoginComplete && IsKstLoginFailureStatus(status))
+                {
+                    HandleKstConnectionFailure(
+                        status,
+                        "ON4KST rejected the login.\r\n\r\n" + status + "\r\n\r\nCheck the callsign and password in Setup, then press Connect again.");
+                    return;
+                }
+
+                if (!_kstLoginComplete && status.Equals("KST connection closed.", StringComparison.OrdinalIgnoreCase))
+                {
+                    HandleKstConnectionFailure(
+                        "KST connection closed before login completed",
+                        "ON4KST closed the connection before the bridge completed login.\r\n\r\nCheck the callsign, password, selected room and internet connection, then press Connect again.");
+                    return;
+                }
+
+                if (_kstLoginComplete &&
+                    (status.Equals("KST connection closed.", StringComparison.OrdinalIgnoreCase) ||
+                     status.StartsWith("KST read error:", StringComparison.OrdinalIgnoreCase) ||
+                     status.StartsWith("Disconnected by KST server", StringComparison.OrdinalIgnoreCase)))
+                {
+                    HandleKstConnectionLost(status);
+                }
+            });
         }
 
         private void OnKstLineReceived(object sender, string line)
         {
-            SafeUi(delegate { ApplyKstLine(line); });
+            SafeUi(delegate
+            {
+                if (_kst == null || !Object.ReferenceEquals(sender, _kst)) return;
+                ApplyKstLine(line);
+            });
         }
 
         private void ApplyKstLine(string line)
@@ -3750,7 +4157,7 @@ namespace DXLog.net
             if (user != null) CalculateQtfQrb(user.Locator, out qtf, out qrb);
             AirScoutPathResult path;
             _airScoutResults.TryGetValue(cleanCall, out path);
-            AirScoutPlaneInfo plane = path == null ? null : path.GetBestPlane();
+            AirScoutPlaneInfo plane = path == null ? null : GetBestFilteredAirScoutPlane(path);
             string asDisplay = plane == null ? "" : (plane.Mins <= 0 ? "NOW" : plane.Mins.ToString() + "m");
             result = result.Replace("{LOC}", locator);
             result = result.Replace("{MYLOC}", NormalizeLocator(GetOwnLocator()));
@@ -4719,13 +5126,15 @@ namespace DXLog.net
                     if (_airScoutScanQueue.Count == 0 && !_airScoutRescanRequested)
                         _lastAirScoutFullScanUtc = DateTime.UtcNow;
                 }
-                if (_settings != null && _settings.AirScoutFilterMinutes >= 0)
+                if (_settings != null && (_settings.AirScoutFilterMinutes >= 0 || _settings.AircraftFilterMode != 0))
                 {
                     KstUserInfo changedUser;
                     if (_userMap.TryGetValue(call, out changedUser) && changedUser != null) UpsertUser(changedUser);
                 }
                 else
                     UpdateAirScoutRow(call);
+                if (_settings != null && _settings.AircraftFilterMode >= (int)KstAircraftFilterMode.PassengerOrCargo)
+                    BeginRefreshAirScoutLivePlanes(false);
                 MaybeRaiseAirScoutAlert(call, previousResult, result);
                 if (_settings != null && _settings.AirScoutAutoSort) SortUsersByAirScoutOpportunity();
                 UpdateAirScoutStatusLabel();
@@ -4736,9 +5145,9 @@ namespace DXLog.net
         private void MaybeRaiseAirScoutAlert(string call, AirScoutPathResult previous, AirScoutPathResult current)
         {
             if (_settings == null || !_settings.AirScoutAlertsEnabled || current == null) return;
-            AirScoutPlaneInfo best = current.GetBestPlane();
+            AirScoutPlaneInfo best = GetBestFilteredAirScoutPlane(current);
             if (best == null || best.Mins > _settings.AirScoutAlertMinutes) return;
-            AirScoutPlaneInfo oldBest = previous == null ? null : previous.GetBestPlane();
+            AirScoutPlaneInfo oldBest = previous == null ? null : GetBestFilteredAirScoutPlane(previous);
             bool crossedThreshold = oldBest == null || oldBest.Mins > _settings.AirScoutAlertMinutes;
             bool becameNow = best.Mins <= 0 && (oldBest == null || oldBest.Mins > 0);
             if (!crossedThreshold && !becameNow) return;
@@ -5096,7 +5505,7 @@ namespace DXLog.net
             if (_settings == null || !_settings.AirScoutEnabled) return "";
             AirScoutPathResult result;
             if (!_airScoutResults.TryGetValue(CleanCall(call), out result) || result == null) return "";
-            AirScoutPlaneInfo best = result.GetBestPlane();
+            AirScoutPlaneInfo best = GetBestFilteredAirScoutPlane(result);
             if (best == null) return "-";
             return best.Mins <= 0 ? "NOW" : best.Mins.ToString() + "m";
         }
@@ -5234,7 +5643,7 @@ namespace DXLog.net
             AirScoutPathResult result;
             if (_airScoutResults.TryGetValue(call, out result) && result != null)
             {
-                AirScoutPlaneInfo best = result.GetBestPlane();
+                AirScoutPlaneInfo best = GetBestFilteredAirScoutPlane(result);
                 if (best == null)
                 {
                     tip.AppendLine().Append("AirScout: no suitable aircraft reported");
@@ -5243,12 +5652,30 @@ namespace DXLog.net
                 {
                     string opportunity = best.Mins <= 0 ? "now" : "in " + best.Mins.ToString() + " min";
                     tip.AppendLine().Append("AirScout aircraft: ").Append(best.Call);
-                    if (!String.IsNullOrWhiteSpace(best.Category)) tip.Append(" (").Append(best.Category).Append(")");
+                    string sizeText = GetAirScoutSizeText(best);
+                    if (!String.IsNullOrWhiteSpace(sizeText)) tip.AppendLine().Append("Size: ").Append(sizeText);
+                    AirScoutLivePlane livePlane;
+                    if (TryGetLivePlaneForAirScoutCandidate(best.Call, out livePlane) && livePlane != null)
+                    {
+                        if (!String.IsNullOrWhiteSpace(livePlane.Flight) && !String.Equals(NormalizeAircraftId(livePlane.Flight), NormalizeAircraftId(best.Call), StringComparison.OrdinalIgnoreCase))
+                            tip.AppendLine().Append("Flight: ").Append(livePlane.Flight.Trim());
+                        if (!String.IsNullOrWhiteSpace(livePlane.Registration))
+                            tip.AppendLine().Append("Registration: ").Append(livePlane.Registration.Trim());
+                        string model = GetAircraftModelName(livePlane.Type);
+                        if (!String.IsNullOrWhiteSpace(model))
+                            tip.AppendLine().Append("Aircraft: ").Append(model);
+                        if (!String.IsNullOrWhiteSpace(livePlane.Type))
+                            tip.AppendLine().Append("Type: ").Append(livePlane.Type.Trim());
+                        tip.AppendLine().Append("Category: ").Append(GetAircraftTrafficClassText(ClassifyAircraftTraffic(livePlane, best))).Append(" (classified)");
+                    }
+                    else if (_settings != null && (_settings.AircraftFilterMode == (int)KstAircraftFilterMode.PassengerOrCargo || _settings.AircraftFilterMode == (int)KstAircraftFilterMode.CargoOnly))
+                    {
+                        tip.AppendLine().Append("Category: unavailable until this aircraft appears in AirScout /planes.json");
+                    }
                     tip.AppendLine().Append("Opportunity: ").Append(opportunity);
                     tip.AppendLine().Append("Potential: ").Append(best.Potential.ToString());
                     tip.AppendLine().Append("Intersection QRB: ").Append(best.IntQRB.ToString()).Append(" km");
-                    AirScoutLivePlane livePlane;
-                    if (TryGetLivePlaneForAirScoutCandidate(best.Call, out livePlane) && livePlane != null)
+                    if (livePlane != null)
                     {
                         if (livePlane.AltitudeFt > 0) tip.AppendLine().Append("Altitude: ").Append(livePlane.AltitudeFt.ToString("N0")).Append(" ft");
                         if (livePlane.SpeedKt > 0) tip.AppendLine().Append("Speed: ").Append(livePlane.SpeedKt.ToString()).Append(" kt");
@@ -5257,6 +5684,105 @@ namespace DXLog.net
                 }
             }
             item.ToolTipText = tip.ToString();
+        }
+
+        private static bool IsKstLoginFailureStatus(string status)
+        {
+            if (String.IsNullOrWhiteSpace(status)) return false;
+            string text = status.ToUpperInvariant();
+            return text.Contains("KST LOGIN FAILED") ||
+                   text.Contains("INVALID KST PASSWORD") ||
+                   text.Contains("WRONG PASSWORD") ||
+                   text.Contains("BAD PASSWORD") ||
+                   text.Contains("INVALID PASSWORD") ||
+                   text.Contains("LOGIN INCORRECT") ||
+                   text.Contains("ACCESS DENIED") ||
+                   text.Contains("AUTHENTICATION FAILED") ||
+                   text.Contains("INVALID CALL") ||
+                   text.Contains("INVALID USER") ||
+                   text.Contains("UNKNOWN USER") ||
+                   text.Contains("NO SUCH USER") ||
+                   text.Contains("CALLSIGN NOT FOUND") ||
+                   text.Contains("NOT REGISTERED") ||
+                   text.Contains("BAD LOGIN") ||
+                   text.Contains("WRONG LOGIN") ||
+                   text.Contains("INVALID LOGIN");
+        }
+
+        private void SetConnectingUi()
+        {
+            _connectButton.Enabled = false;
+            _disconnectButton.Enabled = true;
+            _sendButton.Enabled = false;
+            _cqButton.Enabled = false;
+            if (_composeBox != null) _composeBox.Enabled = false;
+            if (_macroButtons != null)
+            {
+                foreach (Button b in _macroButtons) if (b != null) b.Enabled = false;
+            }
+            _setupButton.Enabled = false;
+            if (_hostBox != null) _hostBox.Enabled = false;
+            if (_portBox != null) _portBox.Enabled = false;
+            if (_userBox != null) _userBox.Enabled = false;
+            if (_passBox != null) _passBox.Enabled = false;
+            if (_roomCombo != null) _roomCombo.Enabled = false;
+        }
+
+        private void DisposeKstClient()
+        {
+            TelnetKstClient client = _kst;
+            _kst = null;
+            if (client == null) return;
+            try { client.LineReceived -= OnKstLineReceived; } catch { }
+            try { client.StatusChanged -= OnKstStatusChanged; } catch { }
+            try { client.LoggedIn -= OnKstLoggedIn; } catch { }
+            try { client.Dispose(); } catch { }
+        }
+
+        private void HandleKstConnectionFailure(string status, string popupText)
+        {
+            if (_kstFailureHandling) return;
+            _kstFailureHandling = true;
+            try
+            {
+                _kstDisconnectRequested = true;
+                _kstLoginComplete = false;
+                if (_kstLoginTimeoutTimer != null) _kstLoginTimeoutTimer.Stop();
+                _userRefreshTimer.Stop();
+                AbortUserRefresh(null);
+                DisposeKstClient();
+                SetConnectionUi(false);
+                UpdateStatus(status);
+                if (_mainForm != null) _mainForm.SetMainStatusText(status);
+
+                if (!_kstFailurePopupShown && !IsDisposed)
+                {
+                    _kstFailurePopupShown = true;
+                    MessageBox.Show(
+                        this,
+                        popupText,
+                        "KST Chat connection failed",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
+            }
+            finally
+            {
+                _kstFailureHandling = false;
+            }
+        }
+
+        private void HandleKstConnectionLost(string status)
+        {
+            _kstDisconnectRequested = true;
+            _kstLoginComplete = false;
+            if (_kstLoginTimeoutTimer != null) _kstLoginTimeoutTimer.Stop();
+            _userRefreshTimer.Stop();
+            AbortUserRefresh(null);
+            DisposeKstClient();
+            SetConnectionUi(false);
+            UpdateStatus(status);
+            if (_mainForm != null) _mainForm.SetMainStatusText(status);
         }
 
         private void SetConnectionUi(bool connected)
@@ -5374,7 +5900,16 @@ namespace DXLog.net
                         }
                         _lastAirScoutPlaneFetchUtc = DateTime.UtcNow;
                     }
-                    SafeUi(delegate { RefreshMapAircraftOnly(); });
+                    SafeUi(delegate
+                    {
+                        if (_settings != null && _settings.AircraftFilterMode >= (int)KstAircraftFilterMode.PassengerOrCargo)
+                        {
+                            RefreshAllAirScoutCells();
+                            RebuildVisibleUserList();
+                            if (_settings.AirScoutAutoSort) SortUsersByAirScoutOpportunity();
+                        }
+                        RefreshMapAircraftOnly();
+                    });
                 }
                 catch (Exception ex)
                 {
@@ -5494,13 +6029,20 @@ namespace DXLog.net
             HashSet<AirScoutLivePlane> used = new HashSet<AirScoutLivePlane>();
             foreach (AirScoutPlaneInfo candidate in pathResult.Planes)
             {
-                if (candidate == null || candidate.Mins >= 30) continue;
+                if (candidate == null || candidate.Mins >= 30 || !MatchesAircraftFilter(candidate)) continue;
                 string key = NormalizeAircraftId(candidate.Call);
                 AirScoutLivePlane live;
                 if (String.IsNullOrWhiteSpace(key) || !liveById.TryGetValue(key, out live) || live == null || !used.Add(live)) continue;
+                KstAircraftTrafficClass trafficClass = ClassifyAircraftTraffic(live, candidate);
                 result.Add(new KstMapAircraft
                 {
                     Call = !String.IsNullOrWhiteSpace(candidate.Call) ? candidate.Call.Trim() : live.DisplayName,
+                    Flight = live.Flight ?? "",
+                    Registration = live.Registration ?? "",
+                    Type = live.Type ?? "",
+                    Model = GetAircraftModelName(live.Type),
+                    Size = GetAirScoutSizeText(candidate),
+                    TrafficClass = GetAircraftTrafficClassText(trafficClass),
                     Lat = live.Lat,
                     Lon = live.Lon,
                     Track = live.Track,
@@ -5528,7 +6070,7 @@ namespace DXLog.net
             AirScoutPathResult pathResult;
             if (!_airScoutResults.TryGetValue(selectedCall, out pathResult) || pathResult == null || pathResult.Planes == null) return false;
             foreach (AirScoutPlaneInfo candidate in pathResult.Planes)
-                if (candidate != null && candidate.Mins < 30) return true;
+                if (candidate != null && candidate.Mins < 30 && MatchesAircraftFilter(candidate)) return true;
             return false;
         }
 
@@ -5871,6 +6413,12 @@ namespace DXLog.net
         private sealed class KstMapAircraft
         {
             public string Call;
+            public string Flight;
+            public string Registration;
+            public string Type;
+            public string Model;
+            public string Size;
+            public string TrafficClass;
             public string Category;
             public double Lat;
             public double Lon;
@@ -5946,6 +6494,12 @@ namespace DXLog.net
                 _canvas = new KstMapCanvas(owner);
                 _canvas.Dock = DockStyle.Fill;
                 _canvas.StationClicked += delegate(KstMapStation station) { StationClicked(station); };
+                _canvas.HoverTextChanged += delegate(string text)
+                {
+                    _toolTip.SetToolTip(_canvas, String.IsNullOrWhiteSpace(text)
+                        ? "Click a station marker to select it; right-click a station marker for KST Bridge commands; drag to pan"
+                        : text);
+                };
 
                 layout.Controls.Add(_refreshButton, 0, 0);
                 layout.Controls.Add(_zoomInButton, 1, 0);
@@ -6322,6 +6876,8 @@ namespace DXLog.net
             public KstMapStation SelectedStation;
             public List<KstMapAircraft> Aircraft = new List<KstMapAircraft>();
             public event Action<KstMapStation> StationClicked;
+            public event Action<string> HoverTextChanged;
+            private string _lastHoverText = "";
 
             public KstMapCanvas(KstChatBridge owner)
             {
@@ -6891,6 +7447,7 @@ namespace DXLog.net
 
             private void DrawAircraft(Graphics g, Rectangle area)
             {
+                _hits.RemoveAll(delegate(KstMapHit hit) { return hit != null && hit.Aircraft != null; });
                 if (Aircraft == null || Aircraft.Count == 0) return;
                 List<RectangleF> occupied = new List<RectangleF>(_staticLabelBounds ?? new List<RectangleF>());
                 using (Font labelFont = new Font(_owner._windowFont.FontFamily, Math.Max(7, _owner._windowFont.Size - 1), FontStyle.Bold))
@@ -6918,8 +7475,10 @@ namespace DXLog.net
                             }
                         }
                         DrawAircraftSymbol(g, pt, plane.Track, colour);
+                        _hits.Add(new KstMapHit { Aircraft = plane, Bounds = new RectangleF(pt.X - 10, pt.Y - 10, 20, 20) });
                         string when = plane.Mins <= 0 ? "NOW" : plane.Mins.ToString() + "m";
                         string label = (String.IsNullOrWhiteSpace(plane.Call) ? "AIRCRAFT" : plane.Call.Trim()) + " " + when;
+                        if (!String.IsNullOrWhiteSpace(plane.Size)) label += " " + plane.Size;
                         if (plane.AltitudeFt > 0) label += " " + Math.Round(plane.AltitudeFt / 1000.0, 0).ToString("0") + "kft";
 
                         SizeF labelSize = g.MeasureString(label, labelFont);
@@ -7149,7 +7708,18 @@ namespace DXLog.net
 
             private void CanvasMouseMove(object sender, MouseEventArgs e)
             {
-                if (!_dragging) return;
+                if (!_dragging)
+                {
+                    KstMapHit hover = FindHit(e.Location);
+                    string hoverText = GetHoverText(hover);
+                    if (!String.Equals(hoverText, _lastHoverText, StringComparison.Ordinal))
+                    {
+                        _lastHoverText = hoverText;
+                        Action<string> handler = HoverTextChanged;
+                        if (handler != null) handler(hoverText);
+                    }
+                    return;
+                }
                 int dx = e.X - _dragStart.X;
                 int dy = e.Y - _dragStart.Y;
                 if (Math.Abs(dx) > 2 || Math.Abs(dy) > 2) _dragMoved = true;
@@ -7185,7 +7755,7 @@ namespace DXLog.net
                     _dragOffset = Point.Empty;
                     _panCommitPending = false;
                     KstMapHit best = FindHit(e.Location);
-                    if (best != null && StationClicked != null) StationClicked(best.Station);
+                    if (best != null && best.Station != null && StationClicked != null) StationClicked(best.Station);
                 }
                 else
                 {
@@ -7199,6 +7769,36 @@ namespace DXLog.net
                     _fitPending = false;
                     SceneChanged();
                 }
+            }
+
+            private static string GetHoverText(KstMapHit hit)
+            {
+                if (hit == null) return "";
+                if (hit.Aircraft != null)
+                {
+                    KstMapAircraft plane = hit.Aircraft;
+                    StringBuilder text = new StringBuilder();
+                    text.Append(String.IsNullOrWhiteSpace(plane.Flight) ? plane.Call : plane.Flight);
+                    if (!String.IsNullOrWhiteSpace(plane.Registration)) text.AppendLine().Append(plane.Registration);
+                    if (!String.IsNullOrWhiteSpace(plane.Model)) text.AppendLine().Append(plane.Model);
+                    if (!String.IsNullOrWhiteSpace(plane.Type)) text.AppendLine().Append("Type: ").Append(plane.Type);
+                    if (!String.IsNullOrWhiteSpace(plane.Size)) text.AppendLine().Append("Size: ").Append(plane.Size);
+                    if (!String.IsNullOrWhiteSpace(plane.TrafficClass)) text.AppendLine().Append("Category: ").Append(plane.TrafficClass).Append(" (classified)");
+                    if (plane.AltitudeFt > 0) text.AppendLine().Append("Altitude: ").Append(plane.AltitudeFt.ToString("N0")).Append(" ft");
+                    if (plane.SpeedKt > 0) text.AppendLine().Append("Speed: ").Append(plane.SpeedKt.ToString()).Append(" kt");
+                    text.AppendLine().Append("Track: ").Append(Math.Round(plane.Track, 0).ToString("000")).Append("°");
+                    text.AppendLine().Append("Opportunity: ").Append(plane.Mins <= 0 ? "NOW" : plane.Mins.ToString() + " min");
+                    return text.ToString();
+                }
+                if (hit.Station != null)
+                {
+                    KstMapStation station = hit.Station;
+                    string text = station.Call;
+                    if (!String.IsNullOrWhiteSpace(station.Name)) text += " - " + station.Name;
+                    if (!String.IsNullOrWhiteSpace(station.Locator)) text += Environment.NewLine + station.Locator;
+                    return text;
+                }
+                return "";
             }
 
             private KstMapHit FindHit(Point pnt)
@@ -7229,6 +7829,7 @@ namespace DXLog.net
         private sealed class KstMapHit
         {
             public KstMapStation Station;
+            public KstMapAircraft Aircraft;
             public RectangleF Bounds;
         }
 
@@ -7920,6 +8521,13 @@ namespace DXLog.net
             if (String.IsNullOrWhiteSpace(data)) return;
             RaiseLine(data);
 
+            if (_status != TelnetKstStatus.LoggedIn && IsLoginFailureLine(data))
+            {
+                RaiseStatus("KST login failed: " + data.Trim());
+                Dispose();
+                return;
+            }
+
             switch (_status)
             {
                 case TelnetKstStatus.WaitForLogin:
@@ -7941,12 +8549,6 @@ namespace DXLog.net
                     break;
 
                 case TelnetKstStatus.WaitForRoomSelection:
-                    if (data.IndexOf("WRONG PASSWORD", StringComparison.OrdinalIgnoreCase) >= 0 || data.IndexOf("BAD PASSWORD", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        RaiseStatus("Invalid KST password");
-                        Dispose();
-                        return;
-                    }
                     if (data.IndexOf("Your choice", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         _ = SendRawLineAsync(_room.ToString());
@@ -7964,6 +8566,28 @@ namespace DXLog.net
                     }
                     break;
             }
+        }
+
+        private static bool IsLoginFailureLine(string data)
+        {
+            if (String.IsNullOrWhiteSpace(data)) return false;
+            string text = data.ToUpperInvariant();
+            return text.Contains("WRONG PASSWORD") ||
+                   text.Contains("BAD PASSWORD") ||
+                   text.Contains("INVALID PASSWORD") ||
+                   text.Contains("LOGIN FAILED") ||
+                   text.Contains("LOGIN INCORRECT") ||
+                   text.Contains("ACCESS DENIED") ||
+                   text.Contains("AUTHENTICATION FAILED") ||
+                   text.Contains("INVALID CALL") ||
+                   text.Contains("INVALID USER") ||
+                   text.Contains("UNKNOWN USER") ||
+                   text.Contains("NO SUCH USER") ||
+                   text.Contains("CALLSIGN NOT FOUND") ||
+                   text.Contains("NOT REGISTERED") ||
+                   text.Contains("BAD LOGIN") ||
+                   text.Contains("WRONG LOGIN") ||
+                   text.Contains("INVALID LOGIN");
         }
 
         private void OpenRawLog()
@@ -8153,6 +8777,63 @@ namespace DXLog.net
         }
     }
 
+    internal enum KstAircraftFilterMode
+    {
+        All = 0,
+        XXAndXXX = 1,
+        XXXOnly = 2,
+        PassengerOrCargo = 3,
+        CargoOnly = 4
+    }
+
+    internal enum KstAircraftTrafficClass
+    {
+        Unknown = 0,
+        Passenger = 1,
+        Cargo = 2
+    }
+
+    internal sealed class KstAircraftFilterOption
+    {
+        public KstAircraftFilterMode Mode { get; private set; }
+
+        public KstAircraftFilterOption(KstAircraftFilterMode mode)
+        {
+            Mode = mode;
+        }
+
+        public static List<KstAircraftFilterOption> GetOptions()
+        {
+            return new List<KstAircraftFilterOption>
+            {
+                new KstAircraftFilterOption(KstAircraftFilterMode.All),
+                new KstAircraftFilterOption(KstAircraftFilterMode.XXAndXXX),
+                new KstAircraftFilterOption(KstAircraftFilterMode.XXXOnly),
+                new KstAircraftFilterOption(KstAircraftFilterMode.PassengerOrCargo),
+                new KstAircraftFilterOption(KstAircraftFilterMode.CargoOnly)
+            };
+        }
+
+        public static KstAircraftFilterMode NormalizeMode(int value)
+        {
+            return value >= (int)KstAircraftFilterMode.All && value <= (int)KstAircraftFilterMode.CargoOnly
+                ? (KstAircraftFilterMode)value
+                : KstAircraftFilterMode.All;
+        }
+
+        public override string ToString()
+        {
+            switch (Mode)
+            {
+                case KstAircraftFilterMode.XXAndXXX: return "XX and XXX";
+                case KstAircraftFilterMode.XXXOnly: return "XXX only";
+                case KstAircraftFilterMode.PassengerOrCargo: return "Passenger / cargo";
+                case KstAircraftFilterMode.CargoOnly: return "Cargo only";
+                default: return "All";
+            }
+        }
+    }
+
     internal sealed class KstDistanceOption
     {
         public int MaxKm { get; private set; }
@@ -8322,6 +9003,7 @@ namespace DXLog.net
         public int AirScoutPort = 9872;
         public int AirScoutHttpPort = 9880;
         public int AirScoutFilterMinutes = -1;
+        public int AircraftFilterMode = 0;
         public bool AirScoutAutoSort = true;
         public bool UnworkedCurrentBandOnly = false;
         public bool AirScoutAlertsEnabled = false;
@@ -8386,6 +9068,7 @@ namespace DXLog.net
                     else if (key == "airscoutport" && Int32.TryParse(val, out n) && n > 0 && n <= 65535) s.AirScoutPort = n;
                     else if (key == "airscouthttpport" && Int32.TryParse(val, out n) && n > 0 && n <= 65535) s.AirScoutHttpPort = n;
                     else if (key == "airscoutfilterminutes" && Int32.TryParse(val, out n)) s.AirScoutFilterMinutes = n;
+                    else if (key == "aircraftfiltermode" && Int32.TryParse(val, out n)) s.AircraftFilterMode = Math.Max(0, Math.Min(4, n));
                     else if (key == "airscoutautosort") { bool b; if (Boolean.TryParse(val, out b)) s.AirScoutAutoSort = b; }
                     else if (key == "unworkedcurrentbandonly") { bool b; if (Boolean.TryParse(val, out b)) s.UnworkedCurrentBandOnly = b; }
                     else if (key == "airscoutalertsenabled") { bool b; if (Boolean.TryParse(val, out b)) s.AirScoutAlertsEnabled = b; }
@@ -8456,6 +9139,7 @@ namespace DXLog.net
                 lines.Add("airscoutport=" + AirScoutPort.ToString());
                 lines.Add("airscouthttpport=" + AirScoutHttpPort.ToString());
                 lines.Add("airscoutfilterminutes=" + AirScoutFilterMinutes.ToString());
+                lines.Add("aircraftfiltermode=" + AircraftFilterMode.ToString());
                 lines.Add("airscoutautosort=" + AirScoutAutoSort.ToString());
                 lines.Add("unworkedcurrentbandonly=" + UnworkedCurrentBandOnly.ToString());
                 lines.Add("airscoutalertsenabled=" + AirScoutAlertsEnabled.ToString());
@@ -8569,7 +9253,7 @@ namespace DXLog.net
             string[] watched = WatchedCalls == null ? new string[0] : (string[])WatchedCalls.Clone();
             Dictionary<string, string> notes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (StationNotes != null) foreach (KeyValuePair<string, string> kv in StationNotes) notes[kv.Key] = kv.Value;
-            return new KstSettings { Host = Host, Port = Port, Room = Room, DistanceFilterKm = DistanceFilterKm, Callsign = Callsign, Password = Password, Name = Name, OwnLocator = OwnLocator, AirScoutEnabled = AirScoutEnabled, AirScoutPort = AirScoutPort, AirScoutHttpPort = AirScoutHttpPort, AirScoutFilterMinutes = AirScoutFilterMinutes, AirScoutAutoSort = AirScoutAutoSort, UnworkedCurrentBandOnly = UnworkedCurrentBandOnly, AirScoutAlertsEnabled = AirScoutAlertsEnabled, AirScoutAlertMinutes = AirScoutAlertMinutes, ShowAircraftTrails = ShowAircraftTrails, TurnRotatorOnStationClick = TurnRotatorOnStationClick, UserNameColumnWidth = UserNameColumnWidth, WatchedCalls = watched, WorkedBandColumns = workedColumns, Macros = m, Macros50_70 = CloneMacroArray(Macros50_70), Macros144_432 = CloneMacroArray(Macros144_432), Macros1296 = CloneMacroArray(Macros1296), MacrosMicrowave = CloneMacroArray(MacrosMicrowave), MacrosEme = CloneMacroArray(MacrosEme), StationNotes = notes, WindowX = WindowX, WindowY = WindowY, WindowW = WindowW, WindowH = WindowH, TitleBarColor = TitleBarColor, ColorValues = colors };
+            return new KstSettings { Host = Host, Port = Port, Room = Room, DistanceFilterKm = DistanceFilterKm, Callsign = Callsign, Password = Password, Name = Name, OwnLocator = OwnLocator, AirScoutEnabled = AirScoutEnabled, AirScoutPort = AirScoutPort, AirScoutHttpPort = AirScoutHttpPort, AirScoutFilterMinutes = AirScoutFilterMinutes, AircraftFilterMode = AircraftFilterMode, AirScoutAutoSort = AirScoutAutoSort, UnworkedCurrentBandOnly = UnworkedCurrentBandOnly, AirScoutAlertsEnabled = AirScoutAlertsEnabled, AirScoutAlertMinutes = AirScoutAlertMinutes, ShowAircraftTrails = ShowAircraftTrails, TurnRotatorOnStationClick = TurnRotatorOnStationClick, UserNameColumnWidth = UserNameColumnWidth, WatchedCalls = watched, WorkedBandColumns = workedColumns, Macros = m, Macros50_70 = CloneMacroArray(Macros50_70), Macros144_432 = CloneMacroArray(Macros144_432), Macros1296 = CloneMacroArray(Macros1296), MacrosMicrowave = CloneMacroArray(MacrosMicrowave), MacrosEme = CloneMacroArray(MacrosEme), StationNotes = notes, WindowX = WindowX, WindowY = WindowY, WindowW = WindowW, WindowH = WindowH, TitleBarColor = TitleBarColor, ColorValues = colors };
         }
     }
 
