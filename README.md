@@ -1,58 +1,28 @@
 # DXLog KST Chat Bridge with AirScout
 
-**Version 2.5.0 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
+**Version 2.5.1 — DXLog.net custom form for ON4KST, AirScout and DXLog rotator control**
 
 <img width="1359" height="607" alt="image" src="https://github.com/user-attachments/assets/26ab8ad0-35d3-4afd-80e8-18847f277bc8" />
 
 
 <img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/a80bc978-51d9-4262-bb1e-7d92f9b1d4d8" />
 
+## Changes since v2.5
 
-## What is new in v2.5.0
+Version 2.5.1 adds aircraft size/type filtering and resolves the interface and connection-state issues found during v2.5 testing.
 
-- **Uniform main toolbar:** corrected the clipped **Distance** caption and aligned Setup, Map, Distance, AS, Auto sort, Need, Room and the connection controls on one consistent row.
-- **Uniform Map toolbar:** renamed the map checkboxes to **Rotator**, **Show AS** and **AS Trails**, with equal-width control cells and consistent spacing.
-- **Adjustable Name column:** the station **Name** column is now the only resizable contact-list column. Its selected width is saved and restored.
-- **Fixed compact data columns:** Call, Loc, QTF, QRB, AS, Active, Msg and worked-band columns retain predictable fixed widths.
-- **Clear QRB units:** the heading is now **QRB km** and each row contains only the numeric distance, saving horizontal space.
-- **Full station popup:** hovering over a Name cell displays the complete decoded name together with the station locator, recent activity, worked state/bands, notes and AirScout details.
+- **Aircraft selector:** choose **All**, **XX and XXX**, **XXX only**, **Passenger / cargo** or **Cargo only**.
+- **AirScout size data:** the bridge uses AirScout's own `X`, `XX` and `XXX` size class for each path candidate; size is not inferred from altitude or speed.
+- **Passenger/cargo classification:** uses the flight callsign, registration and ICAO aircraft type available from AirScout `/planes.json`. This is a best-effort operating classification, not an authoritative aircraft database.
+- **Complete workflow filtering:** unsuitable aircraft cannot produce NOW/approaching indications, pass the AS time filter, trigger alerts, win Auto sort, populate AS macro tokens or appear as the selected-path aircraft.
+- **Expanded aircraft tooltips:** flight, registration, model, ICAO type, size, passenger/cargo class, altitude, speed, track and opportunity information are shown where available.
+- **Cleaner grouped toolbar:** **Settings**, **Map / Distance**, **AirScout**, **List filters** and **KST Chat** keep related controls together. The redundant Distance, AS, Type and Room labels have been removed.
+- **Toolbar corrections:** checkbox text is aligned, the complete Disconnect caption is visible and spacing is consistent.
+- **Failed-login recovery:** a TCP connection is not treated as a successful KST login. Rejected or timed-out logins restore the Connect/Disconnect state and display a warning popup.
+- **No horizontal station-list scrollbar:** all left-pane columns now fit the available width; Name takes the remaining space and columns scale when several worked-band columns are enabled.
+- **Settings compatibility:** existing settings remain usable; the new filter is saved as `aircraftfiltermode`.
 
-## What is new in v2.4.7
-
-- Reworked the Map toolbar into fixed, non-shrinking command columns.
-- Added a flexible spacer before **Close**, keeping the button pinned to the right without covering **Show AirScout path and aircraft**.
-- Increased the Map window default and minimum width so all checkbox captions remain visible.
-- The map canvas and status line now span the revised nine-column toolbar layout.
-
-## What is new in v2.4.6
-
-- **Protected minimum window width:** the KST Chat Bridge can no longer be resized so narrowly that Auto sort/Need cover the Room selector or connection buttons. Saved narrow layouts are expanded safely when restored.
-- **Comprehensive interface tooltips:** added help text to the main toolbar, station and message areas, message controls, status lines, Setup dialog, macro editor and Map window.
-- **Clear map-control help:** the map tooltips now distinguish **Show AirScout path and aircraft** from **Aircraft trails**, explaining that trails can be hidden without hiding the aircraft or stopping the feed.
-- **Map minimum width:** prevents the Map toolbar controls and captions from being clipped into one another.
-
-- Corrected clipping in the top toolbar so **Distance**, **AS**, **Auto sort**, **Need**, and **Room** all display in full.
-- Rebalanced the fixed toolbar column widths without changing the overall window width or moving the Room/connection controls.
-
-- **Aligned main toolbar:** Setup, Map, Distance, AS, Auto sort, Need, Room, Connect and Disconnect now share one consistent vertical baseline using normal DXLog/WinForms control heights.
-- **Clear Auto sort label:** the previously abbreviated **Aut** option is now labelled **Auto sort**. When enabled, NOW and approaching AirScout opportunities are kept at the top of the station list.
-- **Aligned message controls:** the CQ button, To field, message entry box, Send button and M1–M4 buttons now share one vertical baseline.
-- **Matching To/message fields:** the To target is now displayed in a read-only text box matching the message entry field, eliminating the previous border and height mismatch.
-
-- **Unread directed-message indicator:** the new **Msg** column shows an orange unread count for directed KST messages. Selecting that station or its message clears the count.
-- **Per-band macro profiles:** M1–M4 are now stored separately for General, 50/70 MHz, 144/432 MHz, 1296 MHz, Microwave and EME operation. The active profile follows the current DXLog band/room automatically.
-- **Need filter:** a new **Need** option combines with the existing Distance and AS filters to show stations not yet worked on the current DXLog band. Watched stations remain visible.
-- **Prepare contact:** right-click a station and choose **Prepare contact** to place its call/locator into DXLog, open and update the map, request its AirScout path and focus the message field.
-- **Persistent station notes:** add, edit or clear a note from the station context menu. Notes are retained between sessions and shown in the station tooltip.
-- **AirScout feed health:** while the map is open, the status reports when the live aircraft HTTP feed has become stale and retains the last good aircraft data through temporary failures.
-- **UI-latency diagnostics:** the performance window now reports current and maximum UI delay alongside KST, AirScout and map timings.
-- **Rotator sequencing fix:** the DXLog callsign and locator are now allowed to finish updating before the bridge triggers DXLog's Ctrl+F12 rotator command. This restores reliable rotator control from the map.
-- **Explicit rotator command:** right-click a station and choose **Turn rotator to N°** to enter the station into DXLog and turn the antenna using DXLog's normal rotator command.
-- **DXLog compatibility:** the bridge now searches for compatible short-path rotator handler names and retains keyboard/direct-azimuth fallbacks.
-- **Authoritative KST locator:** after DXLog performs its callsign lookup, the bridge overwrites the Loc/Grid/QRA field with the latest locator advertised by that station on KST.
-- **Rotator on station selection:** a deliberate left-click on a KST station and **Prepare contact** now turn the rotator when **Turn rotator on click** is enabled in the Map window.
-- **Single prepared station:** preparing another contact clears the previous highlighted station, leaving only the newly prepared station selected.
-- **Persistent rotator preference:** the Map window's **Turn rotator on click** setting is retained between sessions.
+A detailed change list is included in [`CHANGES-SINCE-v2.5.md`](CHANGES-SINCE-v2.5.md).
 
 This custom form combines the ON4KST chat service with DXLog.net. It displays the current KST station list and chat messages, inserts selected callsigns and locators into DXLog, sends directed messages and macros, calculates QRB/QTF, controls the DXLog rotator command, and uses AirScout to show aircraft-scatter opportunities automatically.
 
@@ -77,32 +47,91 @@ The bridge is supplied as source code and builds as an **x86 .NET Framework 4.8 
 - Optional DXLog rotator command when a station is selected on the map.
 - Automatic AirScout scan of every KST station with a valid locator.
 - Graphical **AS** column using a green blob for **NOW**, an orange blob plus minutes for an approaching aircraft, `-` for no suitable aircraft, or blank before a result is available.
-- Optional automatic AS sorting and filters for **All**, **NOW**, or opportunities within 5, 10 or 20 minutes.
+- Optional automatic AS sorting and time filters for **All**, **NOW**, or opportunities within 5, 10 or 20 minutes.
+- Aircraft filtering for **All**, **XX and XXX**, **XXX only**, **Passenger / cargo** or **Cargo only**, applied to opportunity results and the selected map overlay.
 - Persistent station watchlist. Watched calls are marked with a gold star, stay visible through filters and are scanned first by AirScout.
 - Optional audible/balloon AirScout alerts when a station crosses the configured opportunity threshold.
 - Selected AirScout path and matched aircraft drawn on the KST map.
 - Optional 90-second aircraft trails and watched-station highlighting on the map.
-- Rich station tooltips with AirScout aircraft, opportunity, potential, intersection QRB, altitude, speed and track where available.
+- Rich station and map-aircraft tooltips with flight, registration, model/type, AirScout size, classified passenger/cargo category, opportunity, potential, intersection QRB, altitude, speed and track where available.
 - Right-click the status line for lightweight performance diagnostics.
 - DXLog colour/options menu is restricted to the green title bar; station, message, macro, map and status areas keep their own context actions.
 - Window position, size, colours and macros saved between sessions.
 
 ---
 
-## AirScout opportunity controls
+## AirScout opportunity and aircraft controls
 
-The top bar includes an **AS** filter and an **Auto sort** checkbox:
+The **AirScout** group contains two selectors without separate labels:
 
-- **All** — show every station allowed by the distance filter.
+1. **left selector — opportunity time:** All, NOW, within 5 minutes, within 10 minutes or within 20 minutes;
+2. **right selector — aircraft filter:** All, XX and XXX, XXX only, Passenger / cargo or Cargo only.
+
+The control tooltips also identify the two selectors.
+
+### AirScout aircraft-size classes
+
+AirScout reports a relative size class with each aircraft candidate:
+
+| Size | Bridge interpretation |
+|---|---|
+| `X` | Smallest of the three AirScout size classes. |
+| `XX` | Middle AirScout size class. |
+| `XXX` | Largest AirScout size class. |
+
+These values are AirScout classes, not physical dimensions, aircraft weights or ICAO wake-turbulence categories. The bridge uses the supplied class directly. It does not estimate size from altitude, speed or aircraft-scatter geometry.
+
+The size filters behave as follows:
+
+- **All** — accept every AirScout aircraft candidate.
+- **XX and XXX** — reject `X`; accept `XX` and `XXX`.
+- **XXX only** — accept only `XXX`.
+
+### Passenger and cargo choices
+
+- **Passenger / cargo** — accept `XX`/`XXX` commercial aircraft classified as Passenger or Cargo; exclude Unknown aircraft.
+- **Cargo only** — accept recognised cargo callsigns/operators and dedicated freighter type variants.
+
+Classification uses the metadata supplied by AirScout `/planes.json`, such as flight callsign, registration and ICAO type code. Cargo type variants and known cargo callsigns take priority. Known airliner types and ordinary airline-style callsigns are used as a passenger fallback.
+
+Passenger/cargo classification is best effort. Missing metadata, converted freighters, wet leases, mixed fleets and unusual callsigns can remain **Unknown**.
+
+### Filter scope
+
+The aircraft filter is applied before the bridge selects the best AirScout candidate. It affects:
+
+- the station AS indicator;
+- the AS time filter;
+- Auto sort;
+- AirScout alerts;
+- `{AS}`, `{AIRCRAFT}` and `{ASMIN}` macro values; and
+- the selected-path aircraft shown on the bridge map.
+
+It remains active when the opportunity-time selector is **All**. Watched stations remain visible, but only qualifying aircraft can create an AS indication.
+
+### Aircraft tooltip information
+
+Where available, station and map-aircraft tooltips show:
+
+- flight/callsign and registration;
+- friendly model name and ICAO type;
+- AirScout size (`X`, `XX`, `XXX`);
+- Passenger, Cargo or Unknown classification;
+- altitude, speed and track; and
+- opportunity time, potential and intersection QRB.
+
+### Opportunity-time choices
+
+- **All** — show every station allowed by the other filters.
 - **NOW** — show only current AirScout opportunities.
-- **≤5m / ≤10m / ≤20m** — show stations with an opportunity inside that time.
-- **Auto sort** — continually keeps NOW and approaching stations at the top.
+- **≤5m / ≤10m / ≤20m** — show stations with a qualifying opportunity inside that time.
+- **Auto sort** — keep NOW and approaching stations at the top without hiding the remaining stations.
 
 Right-click a station and choose **Add to watchlist**. Watched stations:
 
 - remain visible even when outside the current distance or AS filter;
 - are marked with a gold star in the list and map;
-- are queried first in each AirScout scan;
+- are queried first in each AirScout scan; and
 - remain watched after restarting DXLog.
 
 AirScout alerts and aircraft trails are configured in **Setup → AirScout**.
@@ -353,6 +382,8 @@ UDP:  9872
 HTTP: 9880
 ```
 
+The HTTP service is required for the aircraft map overlay and for passenger/cargo metadata. The reliable `X`/`XX`/`XXX` size filter comes from the AirScout path result; passenger/cargo classification additionally depends on the fields supplied by `/planes.json`.
+
 The station list uses these AirScout indicators:
 
 - **Green blob** — the best aircraft opportunity is available now.
@@ -377,11 +408,13 @@ A valid own callsign, own locator, KST station locator and DXLog radio frequency
 
 # 7. Understanding the station list
 
-The station list contains:
+The station list contains the core columns below, followed by the selected worked-band columns:
 
 ```text
-Call | Name | Loc | QTF | QRB | AS
+Call | Name | QRA | QTF | QRB | AS | Active | Msg | worked bands...
 ```
+
+All station columns are automatically fitted to the visible left pane. The Name column uses the remaining space, so the list does not require a horizontal scrollbar.
 
 The **AS** values mean:
 
@@ -392,13 +425,13 @@ The **AS** values mean:
 
 Click the **AS** column header to sort the list with `NOW` first, followed by the lowest minute values. This makes it easy to choose a station whose aircraft-scatter opportunity is approaching.
 
-Hover over a station row to see additional AirScout information, including:
+Hover over a station row to see additional station and AirScout information, including:
 
-- Aircraft identifier.
-- Aircraft category.
-- Minutes to opportunity.
-- AirScout potential.
-- Intersection QRB.
+- flight/callsign and registration;
+- model and ICAO type;
+- AirScout size and Passenger/Cargo/Unknown classification;
+- minutes to opportunity, potential and intersection QRB; and
+- altitude, speed and track where available.
 
 ## Automatic scanning
 
@@ -559,10 +592,14 @@ This includes:
 
 - ON4KST host, port, room, callsign and password.
 - Name and home locator.
-- AirScout enable state and ports.
-- Macros.
-- Window position and size.
+- AirScout enable state, UDP/HTTP ports, opportunity-time filter and aircraft filter.
+- Auto sort, Need, distance filter, alerts, aircraft trails and rotator-on-click preference.
+- General and per-band macros.
+- Worked-band columns, watchlist and station notes.
+- Window position, size and station Name-column preference.
 - Display colours and title-bar colour.
+
+The v2.5.1 aircraft selector is stored as `aircraftfiltermode=0..4`.
 
 **Security note:** the ON4KST password is stored in this local INI file. Do not share the file, and protect access to the Windows account.
 
@@ -584,6 +621,8 @@ To reset all bridge settings, close DXLog and rename or delete `KstChatBridgeTel
 - Confirm host `www.on4kst.info` and port `23000`.
 - Check Windows Firewall and internet access.
 - Try a different KST room only after normal login is confirmed.
+- A rejected or incomplete login now displays a warning and automatically restores **Connect** while disabling **Disconnect**.
+- If ON4KST does not complete the login within 20 seconds, the bridge cancels the attempt and returns to the disconnected state.
 
 ## QTF and QRB are blank or incorrect
 
@@ -672,10 +711,14 @@ The historical worked-band index uses best-effort reflection against the install
 ## Files in this source package
 
 ```text
-DXLogKstBridge.cs       complete bridge source code
-DXLogKstBridge.csproj   Visual Studio/.NET Framework project
-README.md               installation and operating guide
-RELEASE-NOTES-v2.1.md   concise release summary
+DXLogKstBridge.cs          complete bridge source code
+DXLogKstBridge.csproj      Visual Studio/.NET Framework project
+README.md                  installation and operating guide
+CHANGES-SINCE-v2.5.md      detailed v2.5 to v2.5.1 change record
+RELEASE-NOTES-v2.5.1.md    concise v2.5.1 release summary
+BUILD-REQUIRED.txt         local build requirements
+VALIDATION.txt             package validation notes
+SHA256SUMS.txt             file checksums
 ```
 
 
